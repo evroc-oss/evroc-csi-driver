@@ -1,0 +1,43 @@
+# EVROC CSI Driver E2E Test Configuration
+# This configuration is used for end-to-end testing with real credentials
+#
+# INSTRUCTIONS:
+# 1. Copy this file to e2e-csi-config.yaml
+# 2. Replace all YOUR_*_HERE placeholders with actual values
+# 3. The e2e-csi-config.yaml file is gitignored to protect credentials
+
+evroc:
+  # REST API base URL
+  restURL: "https://api.cloud.evroc.com"
+
+  # Organization and project for resources
+  organization: "YOUR_ORG_ID_HERE"
+  project: "YOUR_PROJECT_ID_HERE"
+
+  # Skip TLS verification for local testing (NEVER use in production)
+  insecureTLS: false
+
+auth:
+  # OIDC issuer endpoint
+  issuerURL: "https://authn.iam.evroc.com/realms/evroc-customer"
+
+  # OAuth2 client ID
+  clientID: "csi-driver"
+
+  # Credentials
+  username: "YOUR_USERNAME_HERE"
+  password: "YOUR_PASSWORD_HERE"
+
+infrastructure:
+  # Cloud region (required for REST API)
+  region: "se-sto"
+
+csi:
+  # CSI driver identifier
+  identifier: "evroc-csi-driver"
+
+  # Maximum volumes per node
+  maxVolumesPerNode: 128
+
+  # Total storage capacity quota in GB
+  totalCapacityGB: 1000

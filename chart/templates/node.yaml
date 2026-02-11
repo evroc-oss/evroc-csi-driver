@@ -1,0 +1,160 @@
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ include "evroc-csi-driver.fullname" . }}-node
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "evroc-csi-driver.node.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "evroc-csi-driver.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: node
+  updateStrategy:
+    {{- toYaml .Values.node.updateStrategy | nindent 4 }}
+  template:
+    metadata:
+      labels:
+        {{- include "evroc-csi-driver.node.labels" . | nindent 8 }}
+      annotations:
+        # KICS suppressions for CSI driver requirements
+        # CSI node drivers MUST be privileged per CSI specification
+        kics.io/ignore: "Container Is Privileged,Containers With Sys Admin Capabilities,Workload Mounting With Sensitive OS Directory,Volume Mount With OS Directory Write Permissions,Container Running As Root,Containers With Added Capabilities"
+        {{- with .Values.annotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "evroc-csi-driver.node.serviceAccountName" . }}
+      # automountServiceAccountToken: true (required for K8s API)
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      # Security context for the pod
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      {{- with .Values.node.hostAliases }}
+      hostAliases:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        # Main CSI driver node plugin
+        - name: evroc-csi-driver
+          image: "{{ .Values.node.image.repository }}:{{ .Values.node.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.node.image.pullPolicy }}
+          args:
+            - --endpoint=$(CSI_ENDPOINT)
+            - --node-id=$(NODE_ID)
+            - --mode=node
+            - --log-level={{ .Values.logging.level }}
+            {{- if eq .Values.logging.format "json" }}
+            - --log-json
+            {{- end }}
+            {{- if .Values.metrics.enabled }}
+            - --metrics-port={{ .Values.metrics.port | default 9090 }}
+            {{- end }}
+          env:
+            - name: CSI_ENDPOINT
+              value: unix://{{ include "evroc-csi-driver.node.socketPath" . }}
+            - name: NODE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            {{- with .Values.node.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          ports:
+            - name: metrics
+              containerPort: 9090
+              protocol: TCP
+          volumeMounts:
+            - name: plugin-dir
+              mountPath: /csi
+            - name: pods-mount-dir
+              mountPath: {{ .Values.node.kubeletDir }}/pods
+              mountPropagation: Bidirectional
+            - name: volumedevices-dir
+              mountPath: {{ .Values.node.kubeletDir }}/plugins/kubernetes.io/csi/volumeDevices
+              mountPropagation: Bidirectional
+            - name: device-dir
+              mountPath: /dev
+            - name: config
+              mountPath: /etc/evroc-csi
+              readOnly: true
+          resources:
+            {{- toYaml .Values.node.resources | nindent 12 }}
+          # Security context: Node driver requires privileged access
+          # JUSTIFICATION: CSI node drivers must:
+          # - Mount/unmount volumes (requires SYS_ADMIN capability)
+          # - Access host devices (/dev)
+          # - Perform bidirectional mount propagation
+          # These are standard requirements for ALL CSI node drivers per CSI spec
+          securityContext:
+            privileged: true
+            capabilities:
+              add: ["SYS_ADMIN"]
+              drop: ["NET_RAW"]  # Drop unnecessary network capabilities
+            allowPrivilegeEscalation: true
+            readOnlyRootFilesystem: false  # Need write access for socket creation
+
+        # CSI Node Driver Registrar sidecar
+        - name: csi-node-driver-registrar
+          image: "{{ .Values.sidecars.registrar.image.repository }}:{{ .Values.sidecars.registrar.image.tag }}"
+          imagePullPolicy: {{ .Values.sidecars.registrar.image.pullPolicy }}
+          args:
+            - --csi-address={{ include "evroc-csi-driver.node.socketPath" . }}
+            - --kubelet-registration-path={{ .Values.node.pluginDir }}/csi.sock
+            - --v={{ if .Values.debug }}5{{ else }}2{{ end }}
+          volumeMounts:
+            - name: plugin-dir
+              mountPath: /csi
+            - name: registration-dir
+              mountPath: /registration
+          resources:
+            {{- toYaml .Values.sidecars.registrar.resources | nindent 12 }}
+          # Security context: Registrar sidecar doesn't need privileged access
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+            seccompProfile:
+              type: RuntimeDefault
+
+      volumes:
+        - name: plugin-dir
+          hostPath:
+            path: {{ .Values.node.pluginDir }}
+            type: DirectoryOrCreate
+        - name: registration-dir
+          hostPath:
+            path: {{ .Values.node.registrationDir }}
+            type: Directory
+        - name: pods-mount-dir
+          hostPath:
+            path: {{ .Values.node.kubeletDir }}/pods
+            type: Directory
+        - name: volumedevices-dir
+          hostPath:
+            path: {{ .Values.node.kubeletDir }}/plugins/kubernetes.io/csi/volumeDevices
+            type: DirectoryOrCreate
+        - name: device-dir
+          hostPath:
+            path: /dev
+            type: Directory
+        - name: config
+          secret:
+            secretName: {{ include "evroc-csi-driver.configSecretName" . }}
+
+      {{- with .Values.node.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+
+      {{- with .Values.node.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

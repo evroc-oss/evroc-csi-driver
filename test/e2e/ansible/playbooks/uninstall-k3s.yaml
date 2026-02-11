@@ -1,0 +1,59 @@
+---
+# Uninstall k3s from E2E test VM
+# Usage: ansible-playbook -i inventory/e2e-vms.yaml playbooks/uninstall-k3s.yaml
+
+- name: Uninstall k3s
+  hosts: k3s_servers
+  become: yes
+  gather_facts: no
+
+  tasks:
+    - name: Check if k3s is installed
+      stat:
+        path: /usr/local/bin/k3s-uninstall.sh
+      register: uninstall_script
+
+    - name: Run k3s uninstall script
+      shell: /usr/local/bin/k3s-uninstall.sh
+      when: uninstall_script.stat.exists
+
+    - name: Remove k3s directories
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/rancher/k3s
+        - /var/lib/rancher/k3s
+      when: uninstall_script.stat.exists
+
+    - name: Display result
+      debug:
+        msg: "k3s uninstalled successfully"
+      when: uninstall_script.stat.exists
+
+    - name: Display skip message
+      debug:
+        msg: "k3s not installed, nothing to uninstall"
+      when: not uninstall_script.stat.exists
+
+- name: Cleanup local kubeconfig
+  hosts: localhost
+  connection: local
+  gather_facts: no
+
+  vars:
+    kubeconfig_path: "{{ lookup('env', 'HOME') }}/.kube/e2e-k3s-config"
+
+  tasks:
+    - name: Remove kubeconfig file
+      file:
+        path: "{{ kubeconfig_path }}"
+        state: absent
+
+    - name: Display cleanup summary
+      debug:
+        msg:
+          - "=========================================="
+          - "✅ k3s uninstalled from VM"
+          - "✅ Local kubeconfig removed"
+          - "=========================================="

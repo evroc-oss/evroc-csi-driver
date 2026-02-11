@@ -1,0 +1,37 @@
+# Git files
+.git
+.gitignore
+
+# Build artifacts
+bin/
+*.o
+*.a
+*.so
+
+# Test files
+*_test.go
+coverage.txt
+
+# Documentation
+*.md
+LICENSE
+docs/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Deployment files
+deploy/
+Dockerfile
+.dockerignore
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+
+# Misc
+.DS_Store

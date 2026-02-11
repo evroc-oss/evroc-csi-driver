@@ -1,0 +1,295 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'  # Triggers on version tags like v0.1.0, v1.2.3, etc.
+
+permissions:
+  contents: write
+  packages: write
+  id-token: write  # Required for keyless signing with Cosign
+
+jobs:
+  # Build and test the Go binary
+  build:
+    name: Build Binary
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Set up Go
+        uses: actions/setup-go@3041bf56c941b39c61721a86cd11f3bb1338122a # v5.2.0
+        with:
+          go-version: '1.24'
+
+      - name: Cache Go modules
+        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
+      - name: Run tests
+        run: |
+          go test -v -race ./pkg/...
+
+      - name: Build binary
+        run: |
+          make build
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@6f51ac03b9356f520e9adb1b1b7802705f340c2b # v4.5.0
+        with:
+          name: evroc-csi-driver-binary
+          path: bin/evroc-csi-driver
+          retention-days: 7
+
+  # Build and push Docker image to GHCR
+  docker:
+    name: Build and Push Docker Image
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@aa33708b10e362ff993539393ff100fa93ed6a27 # v3.7.1
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3.3.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract version from tag
+        id: get_version
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/}
+          echo "VERSION=${VERSION}" >> $GITHUB_OUTPUT
+          echo "VERSION_NO_V=${VERSION#v}" >> $GITHUB_OUTPUT
+
+      - name: Build and push Docker image
+        id: build_push
+        uses: docker/build-push-action@4f58ea79222b3b9dc2c8bbdd6debcef730109a75 # v6.9.0
+        with:
+          context: .
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}:${{ steps.get_version.outputs.VERSION }}
+            ghcr.io/${{ github.repository }}:latest
+          build-args: |
+            VERSION=${{ steps.get_version.outputs.VERSION_NO_V }}
+            GIT_COMMIT=${{ github.sha }}
+            BUILD_DATE=${{ github.event.repository.updated_at }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@dc72c7d5c4d10cd6bcb8cf6e3fd625a9e5e537da # v3.7.0
+
+      - name: Sign Docker image with Cosign (keyless)
+        env:
+          DIGEST: ${{ steps.build_push.outputs.digest }}
+        run: |
+          echo "Signing image with digest: ${DIGEST}"
+          cosign sign --yes ghcr.io/${{ github.repository }}@${DIGEST}
+
+      # Manual installation: Syft CLI for generating Software Bill of Materials (SBOM)
+      # Replaced anchore/sbom-action to comply with org policy (only GitHub/Docker/Sigstore actions allowed)
+      - name: Install Syft
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
+
+      - name: Generate SBOM
+        run: |
+          VERSION=${{ steps.get_version.outputs.VERSION }}
+          syft ghcr.io/${{ github.repository }}:${VERSION} -o spdx-json > sbom.spdx.json
+
+      - name: Attest SBOM
+        env:
+          DIGEST: ${{ steps.build_push.outputs.digest }}
+        run: |
+          cosign attest --yes --predicate sbom.spdx.json --type spdxjson ghcr.io/${{ github.repository }}@${DIGEST}
+
+      - name: Generate SLSA provenance attestation
+        env:
+          DIGEST: ${{ steps.build_push.outputs.digest }}
+        run: |
+          # Create provenance predicate
+          cat > provenance.json <<EOF
+          {
+            "buildType": "https://github.com/evroc-oss/evroc-csi-driver/blob/main/.github/workflows/release.yml@refs/tags/${{ steps.get_version.outputs.VERSION }}",
+            "builder": {
+              "id": "https://github.com/actions/runner"
+            },
+            "invocation": {
+              "configSource": {
+                "uri": "git+https://github.com/${{ github.repository }}",
+                "digest": {
+                  "sha1": "${{ github.sha }}"
+                },
+                "entryPoint": ".github/workflows/release.yml"
+              }
+            },
+            "metadata": {
+              "buildStartedOn": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+              "buildFinishedOn": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+              "completeness": {
+                "parameters": true,
+                "environment": false,
+                "materials": false
+              },
+              "reproducible": false
+            },
+            "materials": [
+              {
+                "uri": "git+https://github.com/${{ github.repository }}",
+                "digest": {
+                  "sha1": "${{ github.sha }}"
+                }
+              }
+            ]
+          }
+          EOF
+
+          cosign attest --yes --predicate provenance.json --type slsaprovenance ghcr.io/${{ github.repository }}@${DIGEST}
+
+  # Package Helm chart and create GitHub Release
+  release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: [build, docker]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Set up Helm
+        uses: azure/setup-helm@fe7b79cd5ee1e45176fcad797de68ecaf3ca4814 # v4.2.0
+        with:
+          version: '3.16.3'
+
+      - name: Extract version from tag
+        id: get_version
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/}
+          echo "VERSION=${VERSION}" >> $GITHUB_OUTPUT
+          echo "VERSION_NO_V=${VERSION#v}" >> $GITHUB_OUTPUT
+
+      - name: Update Chart.yaml version
+        run: |
+          VERSION=${{ steps.get_version.outputs.VERSION_NO_V }}
+          sed -i "s/^version:.*/version: ${VERSION}/" chart/Chart.yaml
+          sed -i "s/^appVersion:.*/appVersion: \"${VERSION}\"/" chart/Chart.yaml
+
+      - name: Package Helm chart
+        run: |
+          cd chart
+          helm package .
+          cd ..
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@dc72c7d5c4d10cd6bcb8cf6e3fd625a9e5e537da # v3.7.0
+
+      - name: Sign Helm chart package
+        run: |
+          VERSION=${{ steps.get_version.outputs.VERSION_NO_V }}
+          cd chart
+          cosign sign-blob --yes evroc-csi-driver-${VERSION}.tgz --output-signature evroc-csi-driver-${VERSION}.tgz.sig --output-certificate evroc-csi-driver-${VERSION}.tgz.pem
+          cd ..
+
+      - name: Generate release notes
+        id: release_notes
+        run: |
+          VERSION=${{ steps.get_version.outputs.VERSION }}
+          REPO=${{ github.repository }}
+
+          # Extract changelog for this version
+          if grep -q "## \[${VERSION}\]" CHANGELOG.md 2>/dev/null; then
+            NOTES=$(sed -n "/## \[${VERSION}\]/,/## \[/p" CHANGELOG.md | sed '$d')
+          else
+            NOTES="Release ${VERSION}
+
+          ## What's Changed
+
+          See [CHANGELOG.md](https://github.com/${REPO}/blob/main/CHANGELOG.md) for details.
+
+          ## Installation
+
+          ### Using Helm (OCI Registry)
+
+          \`\`\`bash
+          helm install evroc-csi-driver oci://ghcr.io/${{ github.repository_owner }}/charts/evroc-csi-driver --version ${VERSION#v}
+          \`\`\`
+
+          ### Using Helm (GitHub Release)
+
+          \`\`\`bash
+          helm install evroc-csi-driver https://github.com/${REPO}/releases/download/${VERSION}/evroc-csi-driver-${VERSION#v}.tgz
+          \`\`\`
+
+          ## Container Images
+
+          - \`ghcr.io/${REPO}:${VERSION}\`
+          - Signed with Cosign (keyless)
+          - SBOM and SLSA provenance attestations available
+
+          ## Verification
+
+          Verify the image signature:
+
+          \`\`\`bash
+          cosign verify ghcr.io/${REPO}:${VERSION} \\
+            --certificate-identity=https://github.com/${REPO}/.github/workflows/release.yml@refs/tags/${VERSION} \\
+            --certificate-oidc-issuer=https://token.actions.githubusercontent.com
+          \`\`\`
+
+          Verify the Helm chart signature:
+
+          \`\`\`bash
+          cosign verify-blob evroc-csi-driver-${VERSION#v}.tgz \\
+            --signature evroc-csi-driver-${VERSION#v}.tgz.sig \\
+            --certificate evroc-csi-driver-${VERSION#v}.tgz.pem \\
+            --certificate-identity=https://github.com/${REPO}/.github/workflows/release.yml@refs/tags/${VERSION} \\
+            --certificate-oidc-issuer=https://token.actions.githubusercontent.com
+          \`\`\`"
+          fi
+
+          # Write to file to handle multiline
+          echo "$NOTES" > release_notes.txt
+
+      # GitHub CLI: Creates GitHub release with artifacts
+      # Replaced softprops/action-gh-release to comply with org policy
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION=${{ steps.get_version.outputs.VERSION }}
+
+          # Create release with Helm chart and signatures
+          gh release create "$VERSION" \
+            --title "$VERSION" \
+            --notes-file release_notes.txt \
+            chart/evroc-csi-driver-*.tgz \
+            chart/evroc-csi-driver-*.tgz.sig \
+            chart/evroc-csi-driver-*.tgz.pem
+
+      - name: Log in to GitHub Container Registry for Helm
+        uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3.3.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push Helm chart to GHCR OCI registry
+        run: |
+          VERSION=${{ steps.get_version.outputs.VERSION_NO_V }}
+          cd chart
+          helm push evroc-csi-driver-${VERSION}.tgz oci://ghcr.io/${{ github.repository_owner }}/charts
+          cd ..

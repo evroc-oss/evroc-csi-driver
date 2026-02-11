@@ -1,0 +1,30 @@
+---
+# E2E Test VM Inventory
+#
+# INSTRUCTIONS:
+# 1. Replace the IP address below with your actual VM IP
+# 2. Replace the SSH key path with your SSH private key
+# 3. Ensure SSH user has sudo privileges
+# 4. Run: ansible-playbook -i inventory/e2e-vms.yaml playbooks/setup-k3s.yaml
+
+all:
+  vars:
+    # SSH configuration
+    ansible_user: your-ssh-user
+    ansible_ssh_private_key_file: ~/.ssh/id_ed25519
+    ansible_ssh_common_args: '-o StrictHostKeyChecking=no'
+
+  children:
+    # K3s single-node cluster
+    k3s_servers:
+      hosts:
+        e2e-vm:
+          ansible_host: YOUR_VM_IP_HERE
+          zone: a
+
+# Local execution (for running e2e tests from your machine)
+localhost_runner:
+  hosts:
+    localhost:
+      ansible_connection: local
+      ansible_python_interpreter: "{{ ansible_playbook_python }}"

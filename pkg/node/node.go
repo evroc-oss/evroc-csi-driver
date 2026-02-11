@@ -1,0 +1,584 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 evroc
+
+
+package node
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"time"
+
+	"github.com/container-storage-interface/spec/lib/go/csi"
+	"github.com/evroc-oss/evroc-csi-driver/pkg/common"
+	"github.com/evroc-oss/evroc-csi-driver/pkg/filesystem"
+	"github.com/evroc-oss/evroc-csi-driver/pkg/metrics"
+	"golang.org/x/sys/unix"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
+)
+
+const (
+	// DeviceByIDPath is the path where device symlinks are created by udev.
+	DeviceByIDPath = "/dev/disk/by-id"
+	// DefaultFSType is the default filesystem type.
+	DefaultFSType = "ext4"
+
+	// KubeVirt SCSI hotplug disk prefix
+	// KubeVirt creates hotplugged disks that appear as SCSI devices with this naming pattern.
+	// Update this constant if KubeVirt changes its device naming convention.
+	QEMUSCSIDiskPrefix = "scsi-0QEMU_QEMU_HARDDISK_"
+
+	// MaxVolumesPerNode is the maximum number of volumes that can be attached to a single node.
+	// This is a conservative limit based on:
+	// - QEMU virtio-scsi controller supports up to 255 targets by default
+	// - Practical resource limits (memory, I/O bandwidth)
+	// - KubeVirt hotplug disk attachment capabilities
+	//
+	// This is NOT a hard SCSI limit - virtio-scsi can support more devices.
+	// Adjust this value based on your KubeVirt cluster configuration and workload requirements.
+	// Set to 0 in NodeGetInfo to indicate unlimited (not recommended for production).
+	MaxVolumesPerNode = 128
+)
+
+// Service implements the CSI Node Service.
+type Service struct {
+	csi.UnimplementedNodeServer
+	fs                 filesystem.Operations
+	kubeClient         kubernetes.Interface
+	nodeID             string
+	deviceByIDPath     string        // Overridable device path (for testing)
+	logger             *slog.Logger
+	metrics            *metrics.Manager
+	maxVolumesPerNode  int64         // Maximum volumes per node
+	deviceScanTimeout  time.Duration // Maximum time to wait for device to appear
+	deviceScanInterval time.Duration // Polling interval for device scanning
+}
+
+// NewNodeService creates a new Node Service.
+// The fs parameter is required and must not be nil.
+// The kubeClient parameter is required for zone detection via Kubernetes API.
+func NewNodeService(nodeID string, logger *slog.Logger, fs filesystem.Operations, maxVolumesPerNode int64, deviceScanTimeout, deviceScanInterval time.Duration, m *metrics.Manager, kubeClient kubernetes.Interface) *Service {
+	if fs == nil {
+		panic("filesystem operations cannot be nil")
+	}
+	if kubeClient == nil {
+		panic("kubernetes client cannot be nil")
+	}
+
+	return &Service{
+		nodeID:             nodeID,
+		logger:             logger,
+		fs:                 fs,
+		deviceByIDPath:     DeviceByIDPath, // Default to system path
+		maxVolumesPerNode:  maxVolumesPerNode,
+		deviceScanTimeout:  deviceScanTimeout,
+		deviceScanInterval: deviceScanInterval,
+		metrics:            m,
+		kubeClient:         kubeClient,
+	}
+}
+
+// SetDeviceByIDPath allows overriding the device by-id path (for testing).
+func (s *Service) SetDeviceByIDPath(path string) {
+	s.deviceByIDPath = path
+}
+
+// NodeStageVolume mounts the volume to a staging path.
+func (s *Service) NodeStageVolume(ctx context.Context, req *csi.NodeStageVolumeRequest) (*csi.NodeStageVolumeResponse, error) {
+	startTime := time.Now()
+	s.logger.Info("NodeStageVolume called",
+		"volumeID", req.GetVolumeId(),
+		"stagingTargetPath", req.GetStagingTargetPath(),
+		"publishContext", req.GetPublishContext())
+
+	if err := common.ValidateRequiredField(req.GetVolumeId(), "volume ID"); err != nil {
+		return nil, err
+	}
+	// Validate staging path for path traversal attacks
+	if err := common.ValidatePath(req.GetStagingTargetPath(), "staging target path"); err != nil {
+		return nil, err
+	}
+	if req.GetVolumeCapability() == nil {
+		return nil, status.Error(codes.InvalidArgument, "volume capability is required")
+	}
+
+	volumeID := req.GetVolumeId()
+	stagingPath := req.GetStagingTargetPath()
+
+	// Check if already staged (mounted)
+	isMounted, err := s.fs.IsMountPoint(stagingPath)
+	if err != nil {
+		s.logger.Warn("Failed to check mount point", "path", stagingPath, "error", err)
+	}
+	if isMounted {
+		s.logger.Info("Volume already staged", "volumeID", volumeID, "stagingPath", stagingPath)
+		return &csi.NodeStageVolumeResponse{}, nil
+	}
+
+	// Get serial number from PublishContext
+	serial, ok := req.GetPublishContext()["serial"]
+	if !ok || serial == "" {
+		return nil, status.Error(codes.InvalidArgument, "serial number not found in PublishContext")
+	}
+
+	s.logger.Debug("Using serial from PublishContext", "serial", serial)
+
+	// Construct device path using serial
+	devicePath := filepath.Join(s.deviceByIDPath, fmt.Sprintf("%s%s", QEMUSCSIDiskPrefix, serial))
+
+	s.logger.Info("Looking for device", "volumeID", volumeID, "serial", serial, "expectedDevicePath", devicePath)
+
+	// Wait for the device to appear
+	if err := s.fs.WaitForDevice(ctx, devicePath, s.deviceScanTimeout); err != nil {
+		s.logger.Error("Device not found - disk may not be attached to VM",
+			"volumeID", volumeID,
+			"devicePath", devicePath,
+			"timeout", s.deviceScanTimeout,
+			"error", err)
+		return nil, status.Errorf(codes.Unavailable, "device not found at %s: %v", devicePath, err)
+	}
+
+	// Check if this is a block volume
+	volumeCapability := req.GetVolumeCapability()
+	isBlock := volumeCapability.GetBlock() != nil
+
+	if isBlock {
+		// For block volumes, create the staging path as a file and bind mount the device to it
+		s.logger.Info("Staging raw block device",
+			"volumeID", volumeID,
+			"devicePath", devicePath,
+			"stagingPath", stagingPath)
+
+		// Kubernetes may have created the staging path as a directory
+		// For block volumes, we need it to be a file so we can bind mount the device
+		if info, err := os.Stat(stagingPath); err == nil {
+			if info.IsDir() {
+				s.logger.Info("Removing existing directory at staging path for block volume",
+					"volumeID", volumeID,
+					"stagingPath", stagingPath)
+				if err := os.Remove(stagingPath); err != nil {
+					s.logger.Error("Failed to remove existing directory", "error", err)
+					return nil, status.Errorf(codes.Internal, "remove existing directory: %v", err)
+				}
+			}
+		}
+
+		// Create parent directory for staging path
+		if err := s.fs.MkdirAll(filepath.Dir(stagingPath), 0o750); err != nil {
+			s.logger.Error("Failed to create staging parent dir", "error", err)
+			return nil, status.Errorf(codes.Internal, "create staging parent dir: %v", err)
+		}
+
+		// Create the staging file for bind mount
+		if err := s.fs.CreateFile(stagingPath, 0o660); err != nil {
+			s.logger.Error("Failed to create staging file", "error", err)
+			return nil, status.Errorf(codes.Internal, "create staging file: %v", err)
+		}
+
+		// Bind mount the raw device to staging path
+		s.logger.Info("Bind mounting block device", "source", devicePath, "target", stagingPath)
+		if err := s.fs.Mount(devicePath, stagingPath, "", unix.MS_BIND, ""); err != nil {
+			s.logger.Error("Failed to bind mount block device", "error", err, "source", devicePath, "target", stagingPath)
+			s.metrics.RecordNodeOperationError("stage", time.Since(startTime).Seconds(), "mount_failed")
+			return nil, status.Errorf(codes.Internal, "bind mount block device: %v", err)
+		}
+
+		s.logger.Info("Successfully staged block volume",
+			"volumeID", volumeID,
+			"devicePath", devicePath,
+			"stagingPath", stagingPath)
+	} else {
+		// For filesystem volumes, format and mount
+		s.logger.Info("Staging as filesystem volume",
+			"volumeID", volumeID,
+			"devicePath", devicePath,
+			"stagingPath", stagingPath)
+
+		// Check if device needs formatting
+		formatted, err := s.fs.IsDeviceFormatted(ctx, devicePath)
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "check device format: %v", err)
+		}
+
+		// Determine filesystem type
+		fsType := DefaultFSType
+		if volCap := req.GetVolumeCapability(); volCap != nil {
+			if mount := volCap.GetMount(); mount != nil && mount.GetFsType() != "" {
+				fsType = mount.GetFsType()
+			}
+		}
+
+		// Format if needed
+		if !formatted {
+			if err := s.fs.FormatDevice(ctx, devicePath, fsType); err != nil {
+				return nil, status.Errorf(codes.Internal, "format device: %v", err)
+			}
+		}
+
+		// Create target directory and mount
+		if err := s.fs.MkdirAll(stagingPath, 0o750); err != nil {
+			return nil, status.Errorf(codes.Internal, "create staging path: %v", err)
+		}
+
+		var flags uintptr
+		if err := s.fs.Mount(devicePath, stagingPath, fsType, flags, ""); err != nil {
+			s.metrics.RecordNodeOperationError("stage", time.Since(startTime).Seconds(), "mount_failed")
+			return nil, status.Errorf(codes.Internal, "mount device: %v", err)
+		}
+
+		s.logger.Info("Successfully staged volume",
+			"volumeID", volumeID,
+			"devicePath", devicePath,
+			"stagingPath", stagingPath,
+			"fsType", fsType)
+	}
+
+	s.metrics.RecordNodeOperation("stage", time.Since(startTime).Seconds())
+
+	return &csi.NodeStageVolumeResponse{}, nil
+}
+
+// NodeUnstageVolume unmounts the volume from the staging path.
+func (s *Service) NodeUnstageVolume(ctx context.Context, req *csi.NodeUnstageVolumeRequest) (*csi.NodeUnstageVolumeResponse, error) {
+	startTime := time.Now()
+	s.logger.Info("NodeUnstageVolume called",
+		"volumeID", req.GetVolumeId(),
+		"stagingTargetPath", req.GetStagingTargetPath())
+
+	if err := common.ValidateRequiredField(req.GetVolumeId(), "volume ID"); err != nil {
+		return nil, err
+	}
+	// Validate staging path for path traversal attacks
+	if err := common.ValidatePath(req.GetStagingTargetPath(), "staging target path"); err != nil {
+		return nil, err
+	}
+
+	stagingPath := req.GetStagingTargetPath()
+
+	// Check if staging path is mounted
+	isMounted, err := s.fs.IsMountPoint(stagingPath)
+	if err != nil {
+		s.logger.Warn("Failed to check mount point", "path", stagingPath, "error", err)
+	}
+
+	if isMounted {
+		if err := s.fs.Unmount(stagingPath, 0); err != nil {
+			s.metrics.RecordNodeOperationError("unstage", time.Since(startTime).Seconds(), "unmount_failed")
+			return nil, status.Errorf(codes.Internal, "unmount staging path: %v", err)
+		}
+	}
+
+	// Remove the staging path (CSI spec requires cleanup)
+	if err := s.fs.RemoveAll(stagingPath); err != nil {
+		s.logger.Warn("Failed to remove staging path", "path", stagingPath, "error", err)
+		// Don't fail the operation if removal fails - unmount succeeded
+	}
+
+	s.logger.Info("Successfully unstaged volume",
+		"volumeID", req.GetVolumeId(),
+		"stagingTargetPath", stagingPath)
+
+	s.metrics.RecordNodeOperation("unstage", time.Since(startTime).Seconds())
+
+	return &csi.NodeUnstageVolumeResponse{}, nil
+}
+
+// NodePublishVolume mounts the volume to the target path (bind mount from staging).
+func (s *Service) NodePublishVolume(ctx context.Context, req *csi.NodePublishVolumeRequest) (*csi.NodePublishVolumeResponse, error) {
+	startTime := time.Now()
+	s.logger.Info("NodePublishVolume called",
+		"volumeID", req.GetVolumeId(),
+		"targetPath", req.GetTargetPath(),
+		"stagingTargetPath", req.GetStagingTargetPath(),
+		"readonly", req.GetReadonly())
+
+	if err := common.ValidateRequiredField(req.GetVolumeId(), "volume ID"); err != nil {
+		return nil, err
+	}
+	// Validate target path for path traversal attacks
+	if err := common.ValidatePath(req.GetTargetPath(), "target path"); err != nil {
+		return nil, err
+	}
+	// Validate staging path for path traversal attacks (if provided)
+	if req.GetStagingTargetPath() != "" {
+		if err := common.ValidatePath(req.GetStagingTargetPath(), "staging target path"); err != nil {
+			return nil, err
+		}
+	}
+	if req.GetVolumeCapability() == nil {
+		return nil, status.Error(codes.InvalidArgument, "volume capability is required")
+	}
+
+	targetPath := req.GetTargetPath()
+	stagingPath := req.GetStagingTargetPath()
+
+	// Check if already published
+	isMounted, err := s.fs.IsMountPoint(targetPath)
+	if err != nil {
+		s.logger.Warn("Failed to check mount point", "path", targetPath, "error", err)
+	}
+	if isMounted {
+		s.logger.Info("Volume already published", "volumeID", req.GetVolumeId(), "targetPath", targetPath)
+		return &csi.NodePublishVolumeResponse{}, nil
+	}
+
+	// Determine if this is a block volume or filesystem volume
+	volumeCapability := req.GetVolumeCapability()
+	isBlock := volumeCapability.GetBlock() != nil
+
+	// Validate readonly support
+	if isBlock && req.GetReadonly() {
+		return nil, status.Error(codes.InvalidArgument,
+			"readonly access mode is not supported for block volumes")
+	}
+
+	if isBlock {
+		s.logger.Info("Publishing as raw block device",
+			"volumeID", req.GetVolumeId(),
+			"stagingPath", stagingPath,
+			"targetPath", targetPath)
+		// For block volumes, use the staging path as the device
+		// The staging path was already resolved in NodeStageVolume
+		devicePath := stagingPath
+
+		// Create parent directory for target
+		if err := s.fs.MkdirAll(filepath.Dir(targetPath), 0o750); err != nil {
+			s.metrics.RecordNodeOperationError("publish", time.Since(startTime).Seconds(), "create_dir_failed")
+			return nil, status.Errorf(codes.Internal, "create parent dir: %v", err)
+		}
+
+		// Create the target file for bind mount
+		if err := s.fs.CreateFile(targetPath, 0o660); err != nil {
+			s.metrics.RecordNodeOperationError("publish", time.Since(startTime).Seconds(), "create_file_failed")
+			return nil, status.Errorf(codes.Internal, "create target file: %v", err)
+		}
+
+		// Bind mount the device
+		if err := s.fs.Mount(devicePath, targetPath, "", unix.MS_BIND, ""); err != nil {
+			s.metrics.RecordNodeOperationError("publish", time.Since(startTime).Seconds(), "mount_failed")
+			return nil, status.Errorf(codes.Internal, "bind mount block device: %v", err)
+		}
+	} else {
+		s.logger.Info("Publishing as filesystem mount (bind from staging)",
+			"volumeID", req.GetVolumeId(),
+			"stagingPath", stagingPath,
+			"targetPath", targetPath)
+
+		// Create target directory
+		if err := s.fs.MkdirAll(targetPath, 0o750); err != nil {
+			s.metrics.RecordNodeOperationError("publish", time.Since(startTime).Seconds(), "create_dir_failed")
+			return nil, status.Errorf(codes.Internal, "create target path: %v", err)
+		}
+
+		// Bind mount from staging to target
+		var flags uintptr = unix.MS_BIND
+		if req.GetReadonly() {
+			flags |= unix.MS_RDONLY
+		}
+
+		if err := s.fs.Mount(stagingPath, targetPath, "", flags, ""); err != nil {
+			s.metrics.RecordNodeOperationError("publish", time.Since(startTime).Seconds(), "mount_failed")
+			return nil, status.Errorf(codes.Internal, "bind mount staging to target: %v", err)
+		}
+
+		// If readonly, remount with readonly flag
+		if req.GetReadonly() {
+			if err := s.fs.Mount("", targetPath, "", unix.MS_BIND|unix.MS_REMOUNT|unix.MS_RDONLY, ""); err != nil {
+				s.logger.Warn("Failed to remount readonly", "error", err)
+			}
+		}
+	}
+
+	s.logger.Info("Successfully published volume",
+		"volumeID", req.GetVolumeId(),
+		"targetPath", targetPath)
+
+	s.metrics.RecordNodeOperation("publish", time.Since(startTime).Seconds())
+
+	return &csi.NodePublishVolumeResponse{}, nil
+}
+
+// NodeUnpublishVolume unmounts the volume from the target path.
+func (s *Service) NodeUnpublishVolume(ctx context.Context, req *csi.NodeUnpublishVolumeRequest) (*csi.NodeUnpublishVolumeResponse, error) {
+	startTime := time.Now()
+	s.logger.Info("NodeUnpublishVolume called",
+		"volumeID", req.GetVolumeId(),
+		"targetPath", req.GetTargetPath())
+
+	if err := common.ValidateRequiredField(req.GetVolumeId(), "volume ID"); err != nil {
+		return nil, err
+	}
+	// Validate target path for path traversal attacks
+	if err := common.ValidatePath(req.GetTargetPath(), "target path"); err != nil {
+		return nil, err
+	}
+
+	targetPath := req.GetTargetPath()
+
+	// Check if mounted
+	isMounted, err := s.fs.IsMountPoint(targetPath)
+	if err != nil {
+		s.logger.Warn("Failed to check mount point", "path", targetPath, "error", err)
+	}
+
+	if isMounted {
+		if err := s.fs.Unmount(targetPath, 0); err != nil {
+			s.metrics.RecordNodeOperationError("unpublish", time.Since(startTime).Seconds(), "unmount_failed")
+			return nil, status.Errorf(codes.Internal, "unmount target: %v", err)
+		}
+	}
+
+	// Remove the target path (CSI spec requires cleanup)
+	if err := s.fs.RemoveAll(targetPath); err != nil {
+		s.logger.Warn("Failed to remove target path", "path", targetPath, "error", err)
+		// Don't fail the operation if removal fails - unmount succeeded
+	}
+
+	s.logger.Info("Successfully unpublished volume",
+		"volumeID", req.GetVolumeId(),
+		"targetPath", targetPath)
+
+	s.metrics.RecordNodeOperation("unpublish", time.Since(startTime).Seconds())
+
+	return &csi.NodeUnpublishVolumeResponse{}, nil
+}
+
+// NodeGetVolumeStats returns statistics about a volume.
+func (s *Service) NodeGetVolumeStats(ctx context.Context, req *csi.NodeGetVolumeStatsRequest) (*csi.NodeGetVolumeStatsResponse, error) {
+	s.logger.Debug("NodeGetVolumeStats called",
+		"volumeID", req.GetVolumeId(),
+		"volumePath", req.GetVolumePath())
+
+	if err := common.ValidateRequiredField(req.GetVolumeId(), "volume ID"); err != nil {
+		return nil, err
+	}
+	if err := common.ValidateRequiredField(req.GetVolumePath(), "volume path"); err != nil {
+		return nil, err
+	}
+
+	volumePath := req.GetVolumePath()
+
+	// Check if path exists (provides natural protection - invalid paths return NotFound)
+	exists, err := s.fs.PathExists(volumePath)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to check path %s: %v", volumePath, err)
+	}
+	if !exists {
+		return nil, status.Errorf(codes.NotFound, "volume path does not exist: %s", volumePath)
+	}
+
+	// Get filesystem stats
+	stats, err := s.fs.GetFilesystemStats(volumePath)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to get stats for %s: %v", volumePath, err)
+	}
+
+	return &csi.NodeGetVolumeStatsResponse{
+		Usage: []*csi.VolumeUsage{
+			{
+				Unit:      csi.VolumeUsage_BYTES,
+				Available: stats.AvailableBytes,
+				Total:     stats.TotalBytes,
+				Used:      stats.UsedBytes,
+			},
+			{
+				Unit:      csi.VolumeUsage_INODES,
+				Available: stats.AvailableInodes,
+				Total:     stats.TotalInodes,
+				Used:      stats.UsedInodes,
+			},
+		},
+	}, nil
+}
+
+// NodeGetCapabilities returns the capabilities of the node.
+func (s *Service) NodeGetCapabilities(ctx context.Context, req *csi.NodeGetCapabilitiesRequest) (*csi.NodeGetCapabilitiesResponse, error) {
+	s.logger.Debug("NodeGetCapabilities called")
+
+	return &csi.NodeGetCapabilitiesResponse{
+		Capabilities: []*csi.NodeServiceCapability{
+			{
+				Type: &csi.NodeServiceCapability_Rpc{
+					Rpc: &csi.NodeServiceCapability_RPC{
+						Type: csi.NodeServiceCapability_RPC_STAGE_UNSTAGE_VOLUME,
+					},
+				},
+			},
+			{
+				Type: &csi.NodeServiceCapability_Rpc{
+					Rpc: &csi.NodeServiceCapability_RPC{
+						Type: csi.NodeServiceCapability_RPC_GET_VOLUME_STATS,
+					},
+				},
+			},
+		},
+	}, nil
+}
+
+// GetNodeZoneFromKubernetes retrieves the zone label from a Kubernetes node.
+// This is a standalone utility function that can be used for early validation or runtime zone detection.
+// It reads the topology.kubernetes.io/zone label from the node object.
+// Returns an error if the node is not found or if the label is not set.
+func GetNodeZoneFromKubernetes(ctx context.Context, kubeClient kubernetes.Interface, nodeID string) (string, error) {
+	node, err := kubeClient.CoreV1().Nodes().Get(ctx, nodeID, metav1.GetOptions{})
+	if err != nil {
+		return "", fmt.Errorf("failed to get node %s from Kubernetes API: %w", nodeID, err)
+	}
+
+	zone, ok := node.Labels["topology.kubernetes.io/zone"]
+	if !ok || zone == "" {
+		return "", fmt.Errorf("node %s missing topology.kubernetes.io/zone label - zone information is required for multi-zone deployments", nodeID)
+	}
+
+	return zone, nil
+}
+
+// getNodeZone returns the zone for this node by querying the Kubernetes API.
+// It reads the topology.kubernetes.io/zone label from the node object.
+// Returns an error if the label is not set, as zone information is mandatory in multi-zone environments.
+func (s *Service) getNodeZone(ctx context.Context) (string, error) {
+	zone, err := GetNodeZoneFromKubernetes(ctx, s.kubeClient, s.nodeID)
+	if err != nil {
+		return "", err
+	}
+
+	s.logger.Debug("Using zone from node label",
+		"nodeID", s.nodeID,
+		"zone", zone)
+	return zone, nil
+}
+
+// NodeGetInfo returns information about the node.
+func (s *Service) NodeGetInfo(ctx context.Context, req *csi.NodeGetInfoRequest) (*csi.NodeGetInfoResponse, error) {
+	// Get zone from node labels via Kubernetes API
+	// Zone information is mandatory - the driver will not start without it
+	// The topology.kubernetes.io/zone label must be set on the node
+	zone, err := s.getNodeZone(ctx)
+	if err != nil {
+		s.logger.Error("Failed to get node zone - driver cannot start without zone information", "error", err)
+		return nil, status.Errorf(codes.FailedPrecondition, "zone information required: %v", err)
+	}
+
+	topology := &csi.Topology{
+		Segments: map[string]string{
+			"topology.kubernetes.io/zone": zone,
+		},
+	}
+
+	s.logger.Info("NodeGetInfo",
+		"nodeID", s.nodeID,
+		"maxVolumesPerNode", s.maxVolumesPerNode,
+		"zone", zone)
+
+	return &csi.NodeGetInfoResponse{
+		NodeId:             s.nodeID,
+		MaxVolumesPerNode:  s.maxVolumesPerNode,
+		AccessibleTopology: topology,
+	}, nil
+}

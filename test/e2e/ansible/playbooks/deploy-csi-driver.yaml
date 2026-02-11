@@ -1,0 +1,147 @@
+---
+# Deploy CSI driver to k3s cluster for E2E testing
+# Usage: ansible-playbook playbooks/deploy-csi-driver.yaml
+
+- name: Build and Push CSI Driver Image
+  hosts: k3s_servers
+  gather_facts: no
+
+  vars:
+    image_name: evroc-csi-driver
+    image_tag: e2e-test
+
+  tasks:
+    - name: Get project root directory
+      delegate_to: localhost
+      become: no
+      shell: cd {{ playbook_dir }}/../../../.. && pwd
+      register: project_root_result
+      changed_when: false
+
+    - name: Set project root fact
+      set_fact:
+        project_root: "{{ project_root_result.stdout }}"
+
+    - name: Build Docker image locally
+      delegate_to: localhost
+      become: no
+      shell: docker build -t {{ image_name }}:{{ image_tag }} .
+      args:
+        chdir: "{{ project_root }}"
+      register: build_output
+
+    - name: Save Docker image to tarball
+      delegate_to: localhost
+      become: no
+      shell: |
+        docker save {{ image_name }}:{{ image_tag }} -o /tmp/{{ image_name }}-{{ image_tag }}.tar
+
+    - name: Copy image to k3s node
+      copy:
+        src: /tmp/{{ image_name }}-{{ image_tag }}.tar
+        dest: /tmp/{{ image_name }}-{{ image_tag }}.tar
+
+    - name: Load image into k3s
+      become: yes
+      shell: |
+        k3s ctr images import /tmp/{{ image_name }}-{{ image_tag }}.tar
+
+    - name: Cleanup local tarball
+      delegate_to: localhost
+      become: no
+      file:
+        path: /tmp/{{ image_name }}-{{ image_tag }}.tar
+        state: absent
+
+    - name: Cleanup remote tarball
+      become: yes
+      file:
+        path: /tmp/{{ image_name }}-{{ image_tag }}.tar
+        state: absent
+
+- name: Deploy CSI Driver using Helm
+  hosts: localhost
+  connection: local
+  gather_facts: no
+
+  vars:
+    kubeconfig_path: "{{ lookup('env', 'HOME') }}/.kube/e2e-k3s-config"
+    image_name: evroc-csi-driver
+    image_tag: e2e-test
+
+  tasks:
+    - name: Get project root directory
+      shell: cd {{ playbook_dir }}/../../../.. && pwd
+      register: project_root_result
+      changed_when: false
+
+    - name: Set paths
+      set_fact:
+        project_root: "{{ project_root_result.stdout }}"
+        e2e_config_path: "{{ project_root_result.stdout }}/test/e2e/config/e2e-csi-config.yaml"
+    - name: Check if e2e config exists
+      stat:
+        path: "{{ e2e_config_path }}"
+      register: config_file
+
+    - name: Fail if e2e config not found
+      fail:
+        msg: "E2E config not found at {{ e2e_config_path }}. Please create it first."
+      when: not config_file.stat.exists
+
+    - name: Delete existing config secret
+      shell: |
+        export KUBECONFIG={{ kubeconfig_path }}
+        kubectl delete secret evroc-csi-config -n kube-system --ignore-not-found=true
+
+    - name: Create config secret
+      shell: |
+        export KUBECONFIG={{ kubeconfig_path }}
+        kubectl create secret generic evroc-csi-config \
+          -n kube-system \
+          --from-file=config.yaml={{ e2e_config_path }}
+
+    - name: Deploy CSI driver with Helm
+      shell: |
+        export KUBECONFIG={{ kubeconfig_path }}
+        helm upgrade --install evroc-csi {{ project_root }}/chart \
+          --namespace kube-system \
+          --set controller.image.repository={{ image_name }} \
+          --set controller.image.tag={{ image_tag }} \
+          --set controller.image.pullPolicy=Never \
+          --set node.image.repository={{ image_name }} \
+          --set node.image.tag={{ image_tag }} \
+          --set node.image.pullPolicy=Never \
+          --set evroc.existingConfigSecret=evroc-csi-config \
+          --wait \
+          --timeout 5m
+
+    - name: Wait for CSI controller pod to be ready
+      shell: |
+        export KUBECONFIG={{ kubeconfig_path }}
+        kubectl wait --for=condition=ready pod \
+          -n kube-system \
+          -l app.kubernetes.io/component=controller \
+          --timeout=180s
+
+    - name: Wait for CSI node pod to be ready
+      shell: |
+        export KUBECONFIG={{ kubeconfig_path }}
+        kubectl wait --for=condition=ready pod \
+          -n kube-system \
+          -l app.kubernetes.io/component=node \
+          --timeout=180s
+
+    - name: Deploy Prometheus for metrics
+      shell: |
+        export KUBECONFIG={{ kubeconfig_path }}
+        kubectl apply -f {{ project_root }}/test/e2e/prometheus.yaml
+
+    - name: Wait for Prometheus to be ready
+      shell: |
+        export KUBECONFIG={{ kubeconfig_path }}
+        kubectl wait --for=condition=ready pod \
+          -n default \
+          -l app=prometheus \
+          --timeout=60s
+      ignore_errors: yes

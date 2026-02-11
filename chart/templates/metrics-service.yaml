@@ -1,0 +1,41 @@
+{{- if .Values.metrics.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "evroc-csi-driver.fullname" . }}-controller-metrics
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "evroc-csi-driver.labels" . | nindent 4 }}
+    app.kubernetes.io/component: controller
+spec:
+  type: ClusterIP
+  ports:
+    - port: 9090
+      targetPort: metrics
+      protocol: TCP
+      name: metrics
+  selector:
+    {{- include "evroc-csi-driver.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: controller
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "evroc-csi-driver.fullname" . }}-node-metrics
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "evroc-csi-driver.labels" . | nindent 4 }}
+    app.kubernetes.io/component: node
+spec:
+  type: ClusterIP
+  clusterIP: None  # Headless service for per-pod scraping
+  ports:
+    - port: 9090
+      targetPort: metrics
+      protocol: TCP
+      name: metrics
+  selector:
+    {{- include "evroc-csi-driver.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: node
+{{- end }}

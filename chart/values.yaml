@@ -1,0 +1,281 @@
+# Default values for evroc-csi-driver
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+
+# evroc Platform Configuration
+evroc:
+  # Name of existing Secret containing config.yaml with evroc credentials
+  # REQUIRED: You must create this Secret before installing the chart
+  # The Secret must contain a key named "config.yaml" with the full configuration
+  # See README.md for the configuration file format
+  existingConfigSecret: ""
+
+  # Token refresh configuration
+  # OAuth2 tokens expire after ~5-6 minutes, automatic refresh is enabled by default
+  tokenRefresh:
+    enabled: true
+    checkIntervalSeconds: 60
+
+# Controller configuration
+controller:
+  # Number of controller replicas (only 1 is active, others are standby)
+  replicas: 1
+
+  image:
+    repository: ghcr.io/evroc-oss/evroc-csi-driver
+    tag: v0.1.5
+    pullPolicy: IfNotPresent
+
+  # Resource limits and requests
+  resources:
+    limits:
+      cpu: 200m
+      memory: 256Mi
+    requests:
+      cpu: 50m
+      memory: 64Mi
+
+  # Node selector for controller pod
+  nodeSelector: {}
+
+  # Tolerations for controller pod
+  tolerations: []
+
+  # Affinity rules for controller pod
+  affinity: {}
+
+  # Additional environment variables
+  extraEnv: []
+
+  # Enable leader election for high availability
+  leaderElection:
+    enabled: true
+    leaseDuration: 15s
+    renewDeadline: 10s
+    retryPeriod: 5s
+
+# Node configuration
+node:
+  image:
+    repository: ghcr.io/evroc-oss/evroc-csi-driver
+    tag: v0.1.5
+    pullPolicy: IfNotPresent
+
+  # Resource limits and requests for node daemonset
+  resources:
+    limits:
+      cpu: 200m
+      memory: 256Mi
+    requests:
+      cpu: 50m
+      memory: 64Mi
+
+  # Node selector for node daemonset
+  # By default, runs on all nodes
+  nodeSelector: {}
+
+  # Tolerations for node daemonset
+  # By default, tolerates all taints to run on all nodes
+  tolerations:
+    - operator: Exists
+
+  # Update strategy for daemonset
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+
+  # Additional environment variables
+  extraEnv: []
+
+  # Host paths for node plugin
+  kubeletDir: /var/lib/kubelet
+  pluginDir: /var/lib/kubelet/plugins/disk.csi.evroc.com
+  registrationDir: /var/lib/kubelet/plugins_registry
+
+# CSI Driver configuration
+csiDriver:
+  # Driver name (should not be changed)
+  name: disk.csi.evroc.com
+
+  # Attach is required for block volumes
+  attachRequired: true
+
+  # Pod info on mount
+  podInfoOnMount: false
+
+  # Volume lifecycle modes
+  volumeLifecycleModes:
+    - Persistent
+
+  # Filesystem group policy
+  fsGroupPolicy: File
+
+  # Requires republish
+  requiresRepublish: false
+
+# Storage Class configuration
+storageClass:
+  # Create default storage class
+  create: true
+
+  # Storage class name
+  name: evroc-standard
+
+  # Set as default storage class
+  isDefault: false
+
+  # Volume binding mode
+  # WaitForFirstConsumer is recommended for CSI drivers
+  volumeBindingMode: WaitForFirstConsumer
+
+  # Allow volume expansion
+  allowVolumeExpansion: false
+
+  # Reclaim policy (Delete or Retain)
+  reclaimPolicy: Delete
+
+  # Storage class parameters passed to the CSI driver
+  parameters:
+    # Disk storage class on evroc platform
+    diskStorageClass: "persistent"
+
+# RBAC configuration
+rbac:
+  # Create RBAC resources
+  create: true
+
+# Service Account configuration
+serviceAccount:
+  # Create service accounts
+  create: true
+
+  # Annotations for service accounts
+  annotations: {}
+
+  # Names for service accounts (auto-generated if not specified)
+  controller:
+    name: ""
+  node:
+    name: ""
+
+# CSI Sidecar containers (from Kubernetes CSI)
+sidecars:
+  # Provisioner sidecar
+  provisioner:
+    image:
+      repository: registry.k8s.io/sig-storage/csi-provisioner
+      tag: v5.1.0
+      pullPolicy: IfNotPresent
+    resources:
+      limits:
+        cpu: 100m
+        memory: 128Mi
+      requests:
+        cpu: 10m
+        memory: 32Mi
+    # Extra arguments for provisioner
+    extraArgs:
+      - --timeout=60s
+      - --retry-interval-start=2s
+
+  # Attacher sidecar
+  attacher:
+    image:
+      repository: registry.k8s.io/sig-storage/csi-attacher
+      tag: v4.7.0
+      pullPolicy: IfNotPresent
+    resources:
+      limits:
+        cpu: 100m
+        memory: 128Mi
+      requests:
+        cpu: 10m
+        memory: 32Mi
+    extraArgs:
+      - --timeout=60s
+
+  # Node driver registrar sidecar
+  registrar:
+    image:
+      repository: registry.k8s.io/sig-storage/csi-node-driver-registrar
+      tag: v2.12.0
+      pullPolicy: IfNotPresent
+    resources:
+      limits:
+        cpu: 50m
+        memory: 64Mi
+      requests:
+        cpu: 10m
+        memory: 16Mi
+
+# Logging configuration
+logging:
+  # Log level (debug, info, warn, error)
+  level: info
+
+  # Log format (json or text)
+  format: json
+
+# Security context
+securityContext:
+  controller:
+    runAsNonRoot: true
+    runAsUser: 65532
+    fsGroup: 65532
+    seccompProfile:
+      type: RuntimeDefault
+
+  node:
+    # Node plugin needs privileged access
+    privileged: true
+
+# Pod security
+podSecurityPolicy:
+  # Create pod security policy (deprecated in k8s 1.25+)
+  create: false
+
+# Image pull secrets
+imagePullSecrets: []
+
+# Global annotations
+annotations: {}
+
+# Global labels
+labels: {}
+
+# Enable debug mode
+debug: false
+
+# Monitoring/Metrics configuration
+metrics:
+  # Enable Prometheus metrics endpoint
+  enabled: true
+
+  # ServiceMonitor for Prometheus Operator
+  serviceMonitor:
+    # Create ServiceMonitor resource
+    enabled: false
+
+    # Scrape interval
+    interval: 30s
+
+    # Scrape timeout (must be less than interval)
+    scrapeTimeout: 10s
+
+    # Additional labels for ServiceMonitor
+    # Use this to match your Prometheus instance's serviceMonitorSelector
+    additionalLabels: {}
+    # Example:
+    # additionalLabels:
+    #   prometheus: kube-prometheus
+
+# Webhook configuration (for validation/mutation)
+webhook:
+  enabled: false
+
+# Topology configuration for multi-zone support
+# The CSI driver uses topology information from the configuration
+# to enable zone-aware volume scheduling
+topology:
+  enabled: true

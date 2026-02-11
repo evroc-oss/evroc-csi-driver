@@ -1,0 +1,125 @@
+Thank you for installing {{ .Chart.Name }}!
+
+Your release is named: {{ .Release.Name }}
+Namespace: {{ .Release.Namespace }}
+
+evroc CSI Driver has been deployed!
+
+Installation Summary:
+
+Configuration Secret: {{ .Values.evroc.existingConfigSecret | default "NOT SET - SEE WARNING BELOW" }}
+
+Components Deployed:
+  Controller: {{ .Values.controller.replicas }} replica(s)
+  Node DaemonSet: Running on all nodes
+  CSI Driver: {{ include "evroc-csi-driver.driverName" . }}
+{{- if .Values.storageClass.create }}
+  Storage Class: {{ .Values.storageClass.name }}{{ if .Values.storageClass.isDefault }} (default){{ end }}
+{{- end }}
+
+Verify Installation:
+
+1. Check controller pod status:
+   kubectl get pods -n {{ .Release.Namespace }} -l app.kubernetes.io/name={{ include "evroc-csi-driver.name" . }},app.kubernetes.io/component=controller
+
+2. Check node pods status:
+   kubectl get pods -n {{ .Release.Namespace }} -l app.kubernetes.io/name={{ include "evroc-csi-driver.name" . }},app.kubernetes.io/component=node
+
+3. Verify CSI driver registration:
+   kubectl get csidriver {{ include "evroc-csi-driver.driverName" . }}
+
+{{- if .Values.storageClass.create }}
+4. Check storage class:
+   kubectl get storageclass {{ .Values.storageClass.name }}
+{{- end }}
+
+Usage Example:
+
+Create a PVC:
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: my-block-volume
+spec:
+  accessModes:
+    - ReadWriteOnce
+  volumeMode: Block
+  resources:
+    requests:
+      storage: 10Gi
+{{- if .Values.storageClass.create }}
+  storageClassName: {{ .Values.storageClass.name }}
+{{- end }}
+---
+
+Use in a Pod:
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: my-app
+spec:
+  containers:
+  - name: app
+    image: ubuntu:22.04
+    command: ["/bin/sh", "-c", "sleep 3600"]
+    volumeDevices:
+    - name: data
+      devicePath: /dev/block-device
+  volumes:
+  - name: data
+    persistentVolumeClaim:
+      claimName: my-block-volume
+---
+
+Troubleshooting:
+
+View controller logs:
+  kubectl logs -n {{ .Release.Namespace }} -l app.kubernetes.io/component=controller -c evroc-csi-driver
+
+View node logs:
+  kubectl logs -n {{ .Release.Namespace }} -l app.kubernetes.io/component=node -c evroc-csi-driver
+
+Check events:
+  kubectl get events -n {{ .Release.Namespace }} --sort-by='.lastTimestamp'
+
+Documentation:
+  https://github.com/evroc/evroc-csi-driver
+
+Support:
+  https://github.com/evroc/evroc-csi-driver/issues
+
+{{- if not .Values.evroc.existingConfigSecret }}
+
+WARNING: No configuration secret specified!
+
+You must create a Secret with evroc credentials and set evroc.existingConfigSecret.
+
+Example:
+
+  cat > config.yaml <<EOF
+  evroc:
+    organization: "your-organization"
+    project: "your-project"
+
+  auth:
+    username: "your-username"
+    password: "your-password"
+
+  infrastructure:
+    region: "your-region"
+  EOF
+
+  kubectl create secret generic evroc-credentials \
+    --namespace={{ .Release.Namespace }} \
+    --from-file=config.yaml=config.yaml
+
+Then upgrade the release:
+  helm upgrade {{ .Release.Name }} CHART_PATH \
+    --namespace={{ .Release.Namespace }} \
+    --set evroc.existingConfigSecret="evroc-credentials"
+
+{{- end }}
+
+Happy Kuberneting!
