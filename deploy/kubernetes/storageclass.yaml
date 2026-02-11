@@ -1,0 +1,13 @@
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: evroc-standard
+provisioner: disk.csi.evroc.com
+parameters:
+  # Storage class type parameter (maps to evroc storage tiers)
+  diskStorageClass: "persistent"
+# WaitForFirstConsumer enables topology-aware provisioning
+# Volume is created in the same zone as the Pod
+volumeBindingMode: WaitForFirstConsumer
+reclaimPolicy: Delete

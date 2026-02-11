@@ -1,0 +1,21 @@
+apiVersion: storage.k8s.io/v1
+kind: CSIDriver
+metadata:
+  name: disk.csi.evroc.com
+spec:
+  # attachRequired indicates this CSI driver requires an attach operation
+  attachRequired: true
+
+  # podInfoOnMount indicates this CSI driver requires pod info at mount time
+  podInfoOnMount: false
+
+  # volumeLifecycleModes defines what kind of volumes this CSI driver supports
+  volumeLifecycleModes:
+    - Persistent
+
+  # fsGroupPolicy defines if the CSI driver supports volume ownership and permission changes
+  fsGroupPolicy: File
+
+  # requiresRepublish indicates this CSI driver wants NodePublishVolume called
+  # periodically even if volume is already published
+  requiresRepublish: false

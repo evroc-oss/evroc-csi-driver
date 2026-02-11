@@ -1,0 +1,141 @@
+---
+kind: Deployment
+apiVersion: apps/v1
+metadata:
+  name: evroc-csi-controller
+  namespace: kube-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: evroc-csi-controller
+  template:
+    metadata:
+      labels:
+        app: evroc-csi-controller
+    spec:
+      serviceAccountName: evroc-csi-driver
+      priorityClassName: system-cluster-critical
+      # Note: automountServiceAccountToken defaults to true (needed for Kubernetes API access)
+      # Security context for all containers in this pod
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532  # nobody user
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      tolerations:
+        - key: node-role.kubernetes.io/master
+          operator: Exists
+          effect: NoSchedule
+        - key: node-role.kubernetes.io/control-plane
+          operator: Exists
+          effect: NoSchedule
+
+      containers:
+        # CSI Driver Controller
+        - name: evroc-csi-driver
+          image: ghcr.io/evroc-oss/evroc-csi-driver:v0.1.0
+          imagePullPolicy: IfNotPresent
+          args:
+            - "--endpoint=$(CSI_ENDPOINT)"
+            - "--node-id=$(NODE_ID)"
+            - "--mode=controller"
+            - "--metrics-port=9090"
+          env:
+            - name: CSI_ENDPOINT
+              value: unix:///csi/csi.sock
+            - name: NODE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          volumeMounts:
+            - name: socket-dir
+              mountPath: /csi
+            - name: config
+              mountPath: /etc/evroc-csi
+              readOnly: true
+          resources:
+            requests:
+              cpu: 10m
+              memory: 20Mi
+            limits:
+              cpu: 200m
+              memory: 200Mi
+          # Security context: Controller runs as non-root
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true  # Socket writes to mounted volume, not root filesystem
+
+        # CSI Provisioner (sidecar)
+        - name: csi-provisioner
+          image: registry.k8s.io/sig-storage/csi-provisioner:v5.1.0
+          args:
+            - "--csi-address=$(ADDRESS)"
+            - "--v=5"
+            - "--timeout=60s"
+            - "--leader-election"
+            - "--default-fstype=ext4"
+          env:
+            - name: ADDRESS
+              value: /csi/csi.sock
+          volumeMounts:
+            - name: socket-dir
+              mountPath: /csi
+          resources:
+            requests:
+              cpu: 10m
+              memory: 20Mi
+            limits:
+              cpu: 100m
+              memory: 100Mi
+          # Security context: Sidecar runs securely
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+            seccompProfile:
+              type: RuntimeDefault
+
+        # CSI Attacher (sidecar)
+        - name: csi-attacher
+          image: registry.k8s.io/sig-storage/csi-attacher:v4.7.0
+          args:
+            - "--csi-address=$(ADDRESS)"
+            - "--v=5"
+            - "--timeout=60s"
+            - "--leader-election"
+          env:
+            - name: ADDRESS
+              value: /csi/csi.sock
+          volumeMounts:
+            - name: socket-dir
+              mountPath: /csi
+          resources:
+            requests:
+              cpu: 10m
+              memory: 20Mi
+            limits:
+              cpu: 100m
+              memory: 100Mi
+          # Security context: Sidecar runs securely
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+            seccompProfile:
+              type: RuntimeDefault
+
+      volumes:
+        - name: socket-dir
+          emptyDir: {}
+        - name: config
+          secret:
+            secretName: evroc-csi-config

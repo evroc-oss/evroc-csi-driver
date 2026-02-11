@@ -1,0 +1,139 @@
+---
+kind: DaemonSet
+apiVersion: apps/v1
+metadata:
+  name: evroc-csi-driver
+  namespace: kube-system
+spec:
+  selector:
+    matchLabels:
+      app: evroc-csi-driver
+  template:
+    metadata:
+      labels:
+        app: evroc-csi-driver
+      annotations:
+        # KICS suppressions for CSI driver requirements
+        # CSI node drivers MUST be privileged per CSI specification
+        kics.io/ignore: "Container Is Privileged,Containers With Sys Admin Capabilities,Workload Mounting With Sensitive OS Directory,Volume Mount With OS Directory Write Permissions,Container Running As Root,Containers With Added Capabilities"
+    spec:
+      serviceAccountName: evroc-csi-driver
+      # Note: automountServiceAccountToken defaults to true (needed for Kubernetes API access)
+      # Security context for the pod
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+
+      containers:
+        # CSI Driver Container
+        - name: evroc-csi-driver
+          image: ghcr.io/evroc-oss/evroc-csi-driver:v0.1.0
+          imagePullPolicy: IfNotPresent
+          args:
+            - "--endpoint=$(CSI_ENDPOINT)"
+            - "--node-id=$(NODE_ID)"
+            - "--mode=node"
+            - "--metrics-port=9091"
+          env:
+            - name: CSI_ENDPOINT
+              value: unix:///csi/csi.sock
+            - name: NODE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          # Security context: Node driver requires privileged access
+          # JUSTIFICATION: CSI node drivers must:
+          # - Mount/unmount volumes (requires SYS_ADMIN capability)
+          # - Access host devices (/dev)
+          # - Perform bidirectional mount propagation
+          # These are standard requirements for ALL CSI node drivers per CSI spec
+          securityContext:
+            privileged: true
+            capabilities:
+              add: ["SYS_ADMIN"]
+              drop: ["NET_RAW"]  # Drop unnecessary network capabilities
+            allowPrivilegeEscalation: true
+            readOnlyRootFilesystem: false  # Need write access for socket creation
+          volumeMounts:
+            - name: socket-dir
+              mountPath: /csi
+            - name: kubelet-dir
+              mountPath: /var/lib/kubelet
+              mountPropagation: Bidirectional
+            - name: device-dir
+              mountPath: /dev
+              readOnly: false  # Must be writable for block device access
+          resources:
+            requests:
+              cpu: 10m
+              memory: 20Mi
+            limits:
+              cpu: 200m
+              memory: 200Mi
+
+        # CSI Node Driver Registrar (sidecar)
+        - name: node-driver-registrar
+          image: registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.10.0
+          args:
+            - "--csi-address=$(ADDRESS)"
+            - "--kubelet-registration-path=$(DRIVER_REG_SOCK_PATH)"
+            - "--v=5"
+          env:
+            - name: ADDRESS
+              value: /csi/csi.sock
+            - name: DRIVER_REG_SOCK_PATH
+              value: /var/lib/kubelet/plugins/disk.csi.evroc.com/csi.sock
+          volumeMounts:
+            - name: socket-dir
+              mountPath: /csi
+            - name: registration-dir
+              mountPath: /registration
+          resources:
+            requests:
+              cpu: 10m
+              memory: 20Mi
+            limits:
+              cpu: 100m
+              memory: 100Mi
+          # Security context: Registrar sidecar doesn't need privileged access
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+            seccompProfile:
+              type: RuntimeDefault
+
+      volumes:
+        # Socket directory where CSI driver creates its socket
+        # REQUIRED: Standard CSI plugin directory per CSI spec
+        - name: socket-dir
+          hostPath:
+            path: /var/lib/kubelet/plugins/disk.csi.evroc.com
+            type: DirectoryOrCreate
+
+        # Registration directory for kubelet plugin registration
+        # REQUIRED: Standard kubelet plugin registration directory
+        - name: registration-dir
+          hostPath:
+            path: /var/lib/kubelet/plugins_registry
+            type: Directory
+
+        # Kubelet directory for volume mounts
+        # REQUIRED: CSI driver must access kubelet's pods directory for volume mounting
+        - name: kubelet-dir
+          hostPath:
+            path: /var/lib/kubelet
+            type: Directory
+
+        # Device directory for block devices
+        # REQUIRED: CSI driver must access /dev to detect and mount block devices
+        - name: device-dir
+          hostPath:
+            path: /dev
+            type: Directory
+
+      # Tolerations to ensure driver runs on all nodes
+      tolerations:
+        - operator: Exists

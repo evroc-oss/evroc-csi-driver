@@ -1,0 +1,118 @@
+---
+# Deploy CSI driver from GHCR for E2E testing
+# Usage: ansible-playbook playbooks/deploy-csi-driver-ghcr.yaml -e ghcr_image_tag=v0.1.0-rc1
+#
+# Requirements:
+#   - GITHUB_USERNAME environment variable
+#   - GITHUB_PAT environment variable
+
+- name: Deploy CSI Driver from GHCR using Helm
+  hosts: localhost
+  connection: local
+  gather_facts: no
+
+  vars:
+    kubeconfig_path: "{{ lookup('env', 'HOME') }}/.kube/e2e-k3s-config"
+    ghcr_repository: ghcr.io/evroc-oss/evroc-csi-driver
+    ghcr_image_tag: "{{ ghcr_image_tag | default('latest') }}"
+    github_username: "{{ lookup('env', 'GITHUB_USERNAME') }}"
+    github_pat: "{{ lookup('env', 'GITHUB_PAT') }}"
+
+  tasks:
+    - name: Get project root directory
+      shell: cd {{ playbook_dir }}/../../../.. && pwd
+      register: project_root_result
+      changed_when: false
+
+    - name: Set paths
+      set_fact:
+        project_root: "{{ project_root_result.stdout }}"
+        e2e_config_path: "{{ project_root_result.stdout }}/test/e2e/config/e2e-csi-config.yaml"
+
+    - name: Check if e2e config exists
+      stat:
+        path: "{{ e2e_config_path }}"
+      register: config_file
+
+    - name: Fail if e2e config not found
+      fail:
+        msg: "E2E config not found at {{ e2e_config_path }}. Please create it first."
+      when: not config_file.stat.exists
+
+    - name: Validate GHCR credentials
+      fail:
+        msg: "GHCR deployment requires GITHUB_USERNAME and GITHUB_PAT environment variables"
+      when: github_username == '' or github_pat == ''
+
+    - name: Delete existing config secret
+      shell: |
+        export KUBECONFIG={{ kubeconfig_path }}
+        kubectl delete secret evroc-csi-config -n kube-system --ignore-not-found=true
+
+    - name: Create config secret
+      shell: |
+        export KUBECONFIG={{ kubeconfig_path }}
+        kubectl create secret generic evroc-csi-config \
+          -n kube-system \
+          --from-file=config.yaml={{ e2e_config_path }}
+
+    - name: Delete existing GHCR imagePullSecret
+      shell: |
+        export KUBECONFIG={{ kubeconfig_path }}
+        kubectl delete secret ghcr-secret -n kube-system --ignore-not-found=true
+
+    - name: Create GHCR imagePullSecret
+      shell: |
+        export KUBECONFIG={{ kubeconfig_path }}
+        kubectl create secret docker-registry ghcr-secret \
+          --docker-server=ghcr.io \
+          --docker-username={{ github_username }} \
+          --docker-password={{ github_pat }} \
+          --docker-email={{ github_username }}@users.noreply.github.com \
+          -n kube-system
+
+    - name: Deploy CSI driver with Helm from GHCR
+      shell: |
+        export KUBECONFIG={{ kubeconfig_path }}
+        helm upgrade --install evroc-csi {{ project_root }}/chart \
+          --namespace kube-system \
+          --set controller.image.repository={{ ghcr_repository }} \
+          --set controller.image.tag={{ ghcr_image_tag }} \
+          --set controller.image.pullPolicy=IfNotPresent \
+          --set node.image.repository={{ ghcr_repository }} \
+          --set node.image.tag={{ ghcr_image_tag }} \
+          --set node.image.pullPolicy=IfNotPresent \
+          --set imagePullSecrets[0].name=ghcr-secret \
+          --set evroc.existingConfigSecret=evroc-csi-config \
+          --wait \
+          --timeout 5m
+
+    - name: Wait for CSI controller pod to be ready
+      shell: |
+        export KUBECONFIG={{ kubeconfig_path }}
+        kubectl wait --for=condition=ready pod \
+          -n kube-system \
+          -l app.kubernetes.io/component=controller \
+          --timeout=180s
+
+    - name: Wait for CSI node pod to be ready
+      shell: |
+        export KUBECONFIG={{ kubeconfig_path }}
+        kubectl wait --for=condition=ready pod \
+          -n kube-system \
+          -l app.kubernetes.io/component=node \
+          --timeout=180s
+
+    - name: Deploy Prometheus for metrics
+      shell: |
+        export KUBECONFIG={{ kubeconfig_path }}
+        kubectl apply -f {{ project_root }}/test/e2e/prometheus.yaml
+
+    - name: Wait for Prometheus to be ready
+      shell: |
+        export KUBECONFIG={{ kubeconfig_path }}
+        kubectl wait --for=condition=ready pod \
+          -n default \
+          -l app=prometheus \
+          --timeout=60s
+      ignore_errors: yes

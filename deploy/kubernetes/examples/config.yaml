@@ -1,0 +1,32 @@
+# evroc CSI Driver Configuration
+# Mount this file as a Kubernetes Secret at /etc/evroc-csi/config.yaml
+#
+# Minimal configuration - only specify what you need to change:
+#   - organization (required)
+#   - project (required)
+#   - username (required)
+#   - password (required)
+#   - region (required)
+
+# evroc platform configuration
+evroc:
+  organization: <orgId>     # CHANGE: Your organization identifier
+  project: <projectId>      # CHANGE: Your project identifier
+
+# Authentication configuration
+auth:
+  username: csi-driver-account-org-aaabbbcccddd@evroc.com  # CHANGE: Your service account username
+  password: your-password-here                              # CHANGE: Your service account password
+
+# Infrastructure configuration
+infrastructure:
+  region: se-sto  # CHANGE: Your region (e.g., se-sto)
+
+# ============================================================================
+# Advanced configuration (optional) - uncomment only if needed
+# ============================================================================
+
+# csi:
+#   identifier: my-cluster-csi  # Multi-cluster identifier (only needed when multiple clusters share the same project)
+#   maxVolumesPerNode: 128      # Max volumes per node (default: 128)
+#   totalCapacityGB: 1000       # Storage capacity quota (default: 1000)

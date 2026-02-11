@@ -1,0 +1,104 @@
+# golangci-lint configuration for evroc-csi-driver
+# Based on evroc-ext-csi standards
+# Focus: correctness and security over strict style enforcement
+
+version: "2"
+run:
+  modules-download-mode: readonly
+  allow-parallel-runners: true
+  timeout: 5m
+
+linters:
+  enable:
+    # Critical: Error checking
+    - errcheck          # Check for unchecked errors
+    - errorlint         # Correct use of error wrapping
+
+    # Critical: Bug detection
+    - staticcheck       # Advanced static analysis
+    - govet            # Standard Go vet checks
+    - ineffassign      # Detect ineffectual assignments
+    - unused           # Detect unused code
+
+    # Context handling - required for CSI
+    - noctx            # Require context in http.Request
+    - contextcheck     # Check context.Context usage
+
+    # Code quality
+    - misspell         # Fix common spelling mistakes
+
+  disable:
+    # Security - disabled due to too many CSI-specific false positives
+    - gosec            # File/dir operations are core to CSI
+    # Disabled - conflicts with CSI driver patterns
+    - gochecknoglobals  # Prometheus metrics need globals
+    - ireturn           # CSI spec requires returning interfaces
+    - lll              # Line length - readability over strict limits
+    - varnamelen       # Variable names - context matters
+    - nonamedreturns   # Named returns helpful in CSI methods
+    - nakedret         # Sometimes clearer
+    - godot            # Comment formatting - too pedantic
+    - revive           # ALL_CAPS constants fine for CSI/gRPC
+    - gochecknoinits   # init() is fine for metrics registration
+    - testableexamples # Not writing examples
+    - nilnil           # Too pedantic
+    - loggercheck      # slog key-value pairs are fine
+    - forbidigo        # Don't restrict patterns
+    - containedctx     # Context in structs OK for gRPC servers
+
+  settings:
+    errcheck:
+      check-type-assertions: true
+      check-blank: true
+      # Allow ignoring errors in specific safe cases
+      exclude-functions:
+        - (io.Closer).Close
+        - (io.Writer).Write  # hash.Write never returns an error
+
+    staticcheck:
+      checks: ["all", "-ST1000"]  # Disable package comment requirement for now
+
+    gosec:
+      excludes:
+        - G204  # Subprocess with variable - needed for mount/umount/mkfs
+        - G301  # Directory permissions 0755 is fine
+        - G304  # File inclusion - CSI needs to read/write arbitrary paths
+        - G306  # File permissions - /dev/ symlinks are OK
+
+    govet:
+      enable-all: true
+      disable:
+        - shadow       # Shadow variables sometimes OK
+        - fieldalignment  # Struct field alignment - too pedantic
+
+  exclusions:
+    generated: lax
+    paths:
+      - vendor
+    rules:
+      # Exclude generated code
+      - linters:
+          - all
+        path: zz_generated\.deepcopy\.go
+
+      # Allow test helpers to ignore errors
+      - linters:
+          - errcheck
+          - gosec
+          - noctx
+        path: _test\.go
+
+      # Allow globals in metrics
+      - linters:
+          - gochecknoglobals
+        path: internal/metrics/
+
+      # Allow net.Listen in server setup - it's for gRPC server
+      - linters:
+          - noctx
+        path: pkg/driver/driver\.go
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+  new: false

@@ -1,0 +1,107 @@
+---
+# Setup k3s single-node cluster for E2E testing
+# Usage: ansible-playbook -i inventory/e2e-vms.yaml playbooks/setup-k3s.yaml
+
+- name: Install k3s Server (Single-Node Cluster)
+  hosts: k3s_servers
+  become: yes
+  gather_facts: yes
+
+  tasks:
+    - name: Check if k3s is already installed
+      stat:
+        path: /usr/local/bin/k3s
+      register: k3s_binary
+
+    - name: Install k3s server
+      shell: |
+        curl -sfL https://get.k3s.io | sh -s - server \
+          --disable traefik \
+          --disable servicelb \
+          --disable local-storage \
+          --write-kubeconfig-mode 644 \
+          --tls-san {{ ansible_host }} \
+          --node-label topology.kubernetes.io/zone={{ zone }}
+      when: not k3s_binary.stat.exists
+
+    - name: Wait for k3s to be ready
+      wait_for:
+        path: /etc/rancher/k3s/k3s.yaml
+        timeout: 120
+
+    - name: Install required packages
+      apt:
+        name:
+          - util-linux
+          - e2fsprogs
+          - jq
+        state: present
+        update_cache: yes
+      when: ansible_os_family == "Debian"
+
+- name: Configure Local kubectl Access
+  hosts: k3s_servers
+  gather_facts: no
+
+  tasks:
+    - name: Fetch kubeconfig from server
+      fetch:
+        src: /etc/rancher/k3s/k3s.yaml
+        dest: /tmp/k3s-e2e-kubeconfig.yaml
+        flat: yes
+
+    - name: Update kubeconfig server address
+      delegate_to: localhost
+      become: no
+      replace:
+        path: /tmp/k3s-e2e-kubeconfig.yaml
+        regexp: 'https://127.0.0.1:6443'
+        replace: 'https://{{ ansible_host }}:6443'
+
+    - name: Create .kube directory
+      delegate_to: localhost
+      become: no
+      file:
+        path: "{{ lookup('env', 'HOME') }}/.kube"
+        state: directory
+        mode: '0755'
+
+    - name: Copy kubeconfig to ~/.kube/e2e-k3s-config
+      delegate_to: localhost
+      become: no
+      copy:
+        src: /tmp/k3s-e2e-kubeconfig.yaml
+        dest: "{{ lookup('env', 'HOME') }}/.kube/e2e-k3s-config"
+        mode: '0600'
+
+- name: Verify Cluster
+  hosts: localhost
+  connection: local
+  gather_facts: no
+
+  vars:
+    kubeconfig_path: "{{ lookup('env', 'HOME') }}/.kube/e2e-k3s-config"
+
+  tasks:
+    - name: Wait for node to be Ready
+      shell: |
+        export KUBECONFIG={{ kubeconfig_path }}
+        kubectl wait --for=condition=Ready nodes --all --timeout=300s
+      register: nodes_ready
+      retries: 3
+      delay: 10
+
+    - name: Verify zone label
+      shell: |
+        export KUBECONFIG={{ kubeconfig_path }}
+        kubectl get nodes -o json | \
+        jq -r '.items[] | .metadata.name + " -> " + .metadata.labels["topology.kubernetes.io/zone"]'
+      register: zone_labels
+
+    - name: Check for missing zone label
+      shell: |
+        export KUBECONFIG={{ kubeconfig_path }}
+        kubectl get nodes -o json | \
+        jq -r '.items[] | select(.metadata.labels["topology.kubernetes.io/zone"] == null) | .metadata.name'
+      register: missing_labels
+      failed_when: missing_labels.stdout != ""

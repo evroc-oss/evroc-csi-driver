@@ -1,0 +1,156 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "evroc-csi-driver.fullname" . }}-controller
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "evroc-csi-driver.controller.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.controller.replicas }}
+  selector:
+    matchLabels:
+      {{- include "evroc-csi-driver.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: controller
+  template:
+    metadata:
+      labels:
+        {{- include "evroc-csi-driver.controller.labels" . | nindent 8 }}
+      {{- with .Values.annotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "evroc-csi-driver.controller.serviceAccountName" . }}
+      # automountServiceAccountToken: true (required for K8s API)
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.securityContext.controller | nindent 8 }}
+      {{- with .Values.controller.hostAliases }}
+      hostAliases:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        # Main CSI driver controller
+        - name: evroc-csi-driver
+          image: "{{ .Values.controller.image.repository }}:{{ .Values.controller.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.controller.image.pullPolicy }}
+          args:
+            - --endpoint=$(CSI_ENDPOINT)
+            - --node-id=$(NODE_ID)
+            - --mode=controller
+            - --log-level={{ .Values.logging.level }}
+            {{- if eq .Values.logging.format "json" }}
+            - --log-json
+            {{- end }}
+            {{- if .Values.metrics.enabled }}
+            - --metrics-port={{ .Values.metrics.port | default 9090 }}
+            {{- end }}
+          env:
+            - name: CSI_ENDPOINT
+              value: unix://{{ include "evroc-csi-driver.controller.socketPath" . }}
+            - name: NODE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            {{- with .Values.controller.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          ports:
+            - name: metrics
+              containerPort: 9090
+              protocol: TCP
+          volumeMounts:
+            - name: socket-dir
+              mountPath: /var/lib/csi/sockets/pluginproxy
+            - name: config
+              mountPath: /etc/evroc-csi
+              readOnly: true
+          resources:
+            {{- toYaml .Values.controller.resources | nindent 12 }}
+          # Security context: Controller runs as non-root
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true  # Socket writes to mounted volume, not root filesystem
+
+        # CSI Provisioner sidecar
+        - name: csi-provisioner
+          image: "{{ .Values.sidecars.provisioner.image.repository }}:{{ .Values.sidecars.provisioner.image.tag }}"
+          imagePullPolicy: {{ .Values.sidecars.provisioner.image.pullPolicy }}
+          args:
+            - --csi-address={{ include "evroc-csi-driver.controller.socketPath" . }}
+            - --v={{ if .Values.debug }}5{{ else }}2{{ end }}
+            - --leader-election
+            - --leader-election-namespace={{ .Release.Namespace }}
+            {{- with .Values.sidecars.provisioner.extraArgs }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          volumeMounts:
+            - name: socket-dir
+              mountPath: /var/lib/csi/sockets/pluginproxy
+          resources:
+            {{- toYaml .Values.sidecars.provisioner.resources | nindent 12 }}
+          # Security context: Sidecar runs securely
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+            seccompProfile:
+              type: RuntimeDefault
+
+        # CSI Attacher sidecar
+        - name: csi-attacher
+          image: "{{ .Values.sidecars.attacher.image.repository }}:{{ .Values.sidecars.attacher.image.tag }}"
+          imagePullPolicy: {{ .Values.sidecars.attacher.image.pullPolicy }}
+          args:
+            - --csi-address={{ include "evroc-csi-driver.controller.socketPath" . }}
+            - --v={{ if .Values.debug }}5{{ else }}2{{ end }}
+            - --leader-election
+            - --leader-election-namespace={{ .Release.Namespace }}
+            {{- with .Values.sidecars.attacher.extraArgs }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          volumeMounts:
+            - name: socket-dir
+              mountPath: /var/lib/csi/sockets/pluginproxy
+          resources:
+            {{- toYaml .Values.sidecars.attacher.resources | nindent 12 }}
+          # Security context: Sidecar runs securely
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+            seccompProfile:
+              type: RuntimeDefault
+
+      volumes:
+        - name: socket-dir
+          emptyDir: {}
+        - name: config
+          secret:
+            secretName: {{ include "evroc-csi-driver.configSecretName" . }}
+
+      {{- with .Values.controller.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+
+      {{- with .Values.controller.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+
+      {{- with .Values.controller.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

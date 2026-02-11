@@ -1,0 +1,116 @@
+{{- if .Values.rbac.create -}}
+---
+# Controller ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "evroc-csi-driver.fullname" . }}-controller
+  labels:
+    {{- include "evroc-csi-driver.controller.labels" . | nindent 4 }}
+rules:
+  # Access to PersistentVolumes
+  - apiGroups: [""]
+    resources: ["persistentvolumes"]
+    verbs: ["get", "list", "watch", "create", "delete", "patch", "update"]
+
+  # Access to PersistentVolumeClaims
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims/status"]
+    verbs: ["patch", "update"]
+
+  # Access to StorageClasses
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["storageclasses"]
+    verbs: ["get", "list", "watch"]
+
+  # Access to VolumeAttachments
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["volumeattachments"]
+    verbs: ["get", "list", "watch", "patch", "update"]
+
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["volumeattachments/status"]
+    verbs: ["patch", "update"]
+
+  # Access to CSINodes
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["csinodes"]
+    verbs: ["get", "list", "watch"]
+
+  # Access to Nodes
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch"]
+
+  # Access to Events
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch", "update"]
+
+  # Leader election resources
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "watch", "list", "delete", "update", "create", "patch"]
+
+---
+# Controller ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "evroc-csi-driver.fullname" . }}-controller
+  labels:
+    {{- include "evroc-csi-driver.controller.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "evroc-csi-driver.fullname" . }}-controller
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "evroc-csi-driver.controller.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+
+---
+# Node ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "evroc-csi-driver.fullname" . }}-node
+  labels:
+    {{- include "evroc-csi-driver.node.labels" . | nindent 4 }}
+rules:
+  # Access to Nodes (for node information)
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get"]
+
+  # Access to Events
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch", "update"]
+
+  # Access to Pods (to get VM name from hostname)
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+
+---
+# Node ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "evroc-csi-driver.fullname" . }}-node
+  labels:
+    {{- include "evroc-csi-driver.node.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "evroc-csi-driver.fullname" . }}-node
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "evroc-csi-driver.node.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}
