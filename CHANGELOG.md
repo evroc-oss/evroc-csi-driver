@@ -5,6 +5,13 @@ All notable changes to the evroc CSI driver will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.6] - 2026-02-18
+
+### Changed
+
+- Moved to evroc API version v1beta1
+- Clarified support in `README.md`
+
 ## [0.1.4] - 2026-02-11
 
 ### Added
@@ -122,3 +129,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [Unreleased]: https://github.com/evroc-oss/evroc-csi-driver/compare/v0.1.4...HEAD
 [0.1.4]: https://github.com/evroc-oss/evroc-csi-driver/releases/tag/v0.1.4
 [0.1.5]: https://github.com/evroc-oss/evroc-csi-driver/releases/tag/v0.1.5
+[0.1.6]: https://github.com/evroc-oss/evroc-csi-driver/releases/tag/v0.1.6

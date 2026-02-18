@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 evroc
 
-
 package controller
 
 import (
@@ -268,7 +267,7 @@ func (s *Service) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest
 	// Round UP to ensure disk is AT LEAST RequiredBytes
 	// Formula: (capacityBytes + 1024*1024 - 1) / (1024*1024)
 	// This ensures we never create a disk smaller than requested
-	capacityMB := int32((capacityBytes + 1024*1024 - 1) / (1024*1024))
+	capacityMB := int32((capacityBytes + 1024*1024 - 1) / (1024 * 1024))
 
 	s.logger.Debug("Calculated disk size",
 		"requestedBytes", capacityBytes,

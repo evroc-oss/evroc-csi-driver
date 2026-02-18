@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 evroc
 
-
 package auth
 
 import (
@@ -26,12 +25,12 @@ const (
 	tokenValidityBuffer = 30 * time.Second
 
 	// HTTP client timeouts for dual-stack networking
-	dialTimeout            = 10 * time.Second
-	dialKeepAlive          = 30 * time.Second
-	dialFallbackDelay      = 300 * time.Millisecond
-	tlsHandshakeTimeout    = 10 * time.Second
-	idleConnTimeout        = 90 * time.Second
-	expectContinueTimeout  = 1 * time.Second
+	dialTimeout           = 10 * time.Second
+	dialKeepAlive         = 30 * time.Second
+	dialFallbackDelay     = 300 * time.Millisecond
+	tlsHandshakeTimeout   = 10 * time.Second
+	idleConnTimeout       = 90 * time.Second
+	expectContinueTimeout = 1 * time.Second
 )
 
 // Client handles OIDC authentication and token management.

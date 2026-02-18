@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 evroc
 
-
 package rest
 
 import (
@@ -20,7 +19,7 @@ import (
 const (
 	// API version and group constants for REST API calls
 	computeAPIGroup   = "compute"
-	computeAPIVersion = "v1alpha2"
+	computeAPIVersion = "v1beta1"
 
 	// ManagedByLabel is the label key for CSI driver instance identification.
 	ManagedByLabel = "managed-by"
@@ -34,51 +33,67 @@ const (
 
 // REST API specific types to match the REST API structure
 
-// RestDiskMetadata represents metadata for REST API disk creation (v1alpha2)
+// RestDiskMetadata represents metadata for REST API disk creation (v1beta1)
 type RestDiskMetadata struct {
 	UserLabels map[string]string `json:"userLabels,omitempty"`
-	ID         string            `json:"id"`
+	ID         string            `json:"id,omitempty"`
 }
 
-// RestDiskPlacement represents placement for REST API v1alpha2
+// RestDiskPlacement represents placement for REST API v1beta1
 type RestDiskPlacement struct {
-	Zone string `json:"zone,omitempty"`
+	Zone *string `json:"zone,omitempty"`
 }
 
-// RestDiskSpec represents the spec for REST API disk creation
+// RestDiskSize represents disk size for REST API v1beta1
+type RestDiskSize struct {
+	Amount int32  `json:"amount"`
+	Unit   string `json:"unit"`
+}
+
+// RestDiskSpec represents the spec for REST API disk creation (v1beta1)
 type RestDiskSpec struct {
-	DiskImage        *types.DiskImageInfo       `json:"diskImage,omitempty"`
-	Placement        RestDiskPlacement          `json:"placement,omitempty"`
-	DiskStorageClass types.DiskStorageClassInfo `json:"diskStorageClass"`
-	DiskSize         types.DiskSize             `json:"diskSize,omitempty"`
+	DiskImageRef *string           `json:"diskImageRef,omitempty"`
+	Placement    RestDiskPlacement `json:"placement"`
+	DiskSize     *RestDiskSize     `json:"diskSize,omitempty"`
 }
 
-// RestDisk represents a disk for REST API operations
+// RestDisk represents a disk for REST API operations (v1beta1)
 type RestDisk struct {
-	APIVersion string           `json:"apiVersion,omitempty"`
-	Kind       string           `json:"kind,omitempty"`
+	APIVersion string           `json:"apiVersion"`
+	Kind       string           `json:"kind"`
 	Metadata   RestDiskMetadata `json:"metadata"`
 	Spec       RestDiskSpec     `json:"spec"`
 }
 
-// RestHotswapMetadata represents metadata for REST API hotswap attachment creation (v1alpha2)
+// RestHotswapMetadata represents metadata for REST API hotswap attachment creation (v1beta1)
 type RestHotswapMetadata struct {
 	UserLabels map[string]string `json:"userLabels,omitempty"`
-	ID         string            `json:"id"`
+	ID         string            `json:"id,omitempty"`
 }
 
-// RestHotswapSpec represents the spec for REST API hotswap attachment
+// RestHotswapSpec represents the spec for REST API hotswap attachment (v1beta1)
 type RestHotswapSpec struct {
-	DiskRef string `json:"diskRef"`
-	VMRef   string `json:"vmRef"`
+	DiskRef           string `json:"diskRef"`
+	VirtualMachineRef string `json:"virtualMachineRef"`
 }
 
-// RestHotswapAttachment represents a hotswap disk attachment for REST API operations
+// RestHotswapAttachment represents a hotswap disk attachment for REST API operations (v1beta1)
 type RestHotswapAttachment struct {
-	APIVersion string              `json:"apiVersion,omitempty"`
-	Kind       string              `json:"kind,omitempty"`
+	APIVersion string              `json:"apiVersion"`
+	Kind       string              `json:"kind"`
 	Metadata   RestHotswapMetadata `json:"metadata"`
 	Spec       RestHotswapSpec     `json:"spec"`
+}
+
+// resolveResourceRef converts a short resource name to a fully qualified resource path.
+// If the ref already starts with "/", it's returned as-is (already qualified).
+// Format: /{service}/projects/{project}/regions/{region}/{resourceType}/{name}
+func (c *Client) resolveResourceRef(ref, resourceType string) string {
+	if strings.HasPrefix(ref, "/") {
+		return ref
+	}
+	return fmt.Sprintf("/%s/projects/%s/regions/%s/%s/%s",
+		computeAPIGroup, c.projectID, c.region, resourceType, ref)
 }
 
 // attachmentName generates a deterministic attachment name from disk and VM names.
@@ -150,13 +165,6 @@ func (c *Client) validateExistingDisk(disk *types.Disk, name string, sizeMB int3
 		c.recordAPIErrorWithType("CreateDisk", startTime, "already_exists")
 		return status.Errorf(codes.AlreadyExists, "disk %s already exists but with different size: %d%s vs %dMB",
 			name, disk.Spec.DiskSize.Amount, disk.Spec.DiskSize.Unit, sizeMB)
-	}
-
-	// Validate storage class matches
-	if disk.Spec.DiskStorageClass.Name != storageClass {
-		c.recordAPIErrorWithType("CreateDisk", startTime, "already_exists")
-		return status.Errorf(codes.AlreadyExists, "disk %s already exists but with different storage class: %s vs %s",
-			name, disk.Spec.DiskStorageClass.Name, storageClass)
 	}
 
 	return nil
@@ -244,19 +252,17 @@ func (c *Client) EnsureDiskCreated(ctx context.Context, name string, sizeMB int3
 			},
 		},
 		Spec: RestDiskSpec{
-			DiskSize: types.DiskSize{
+			DiskSize: &RestDiskSize{
 				Amount: sizeMB,
 				Unit:   "MB",
 			},
-			DiskStorageClass: types.DiskStorageClassInfo{
-				Name: storageClass,
-			},
+			Placement: RestDiskPlacement{},
 		},
 	}
 
 	// Add zone if specified
 	if zone != "" {
-		restDisk.Spec.Placement.Zone = zone
+		restDisk.Spec.Placement.Zone = &zone
 	}
 
 	c.logger.Info("Creating disk", "name", name, "path", listPath)
@@ -480,6 +486,7 @@ func (c *Client) EnsureAttachmentCreated(ctx context.Context, diskName, vmName s
 		"attachmentName", attName)
 
 	// Create attachment with REST API format
+	// Convert short names to fully qualified resource paths
 	restAttachment := &RestHotswapAttachment{
 		APIVersion: computeAPIGroup + "/" + computeAPIVersion,
 		Kind:       "HotswapDiskAttachment",
@@ -490,8 +497,8 @@ func (c *Client) EnsureAttachmentCreated(ctx context.Context, diskName, vmName s
 			},
 		},
 		Spec: RestHotswapSpec{
-			DiskRef: diskName,
-			VMRef:   vmName,
+			DiskRef:           c.resolveResourceRef(diskName, "disks"),
+			VirtualMachineRef: c.resolveResourceRef(vmName, "virtualMachines"),
 		},
 	}
 
