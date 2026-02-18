@@ -107,6 +107,7 @@ sudo apk add util-linux e2fsprogs
 - Kubernetes nodes must be evroc VMs
 - Nodes must have `topology.kubernetes.io/zone` label set to one of: `a`, `b`, or `c`
 - evroc platform credentials (username and password)
+    - Request a service account from evroc support.
 
 #### Step 1: Label Your Nodes
 
@@ -462,10 +463,6 @@ cosign verify-attestation \
 - **SLSA Provenance**: Build provenance attestations for supply chain transparency
 - **Pinned Actions**: GitHub Actions are pinned to commit SHAs to prevent supply chain attacks
 
-## Version
-
-Current version: **v0.1.0**
-
 ## License
 
 Licensed under the Apache License 2.0. See [LICENSE](LICENSE) for details.
@@ -475,5 +472,5 @@ Licensed under the Apache License 2.0. See [LICENSE](LICENSE) for details.
 This repository is a public release mirror. Development happens internally.
 
 For issues and questions:
-- **GitHub Issues**: [https://github.com/evroc-oss/evroc-csi-driver/issues](https://github.com/evroc-oss/evroc-csi-driver/issues) - Report bugs or request features
+- **Issues**: Raise issues through [evroc support channels](https://docs.evroc.com/support.html).
 - **Documentation**: See the [docs](docs/) directory for architecture and development guides

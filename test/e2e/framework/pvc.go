@@ -50,5 +50,3 @@ func (f *Framework) DeletePVC(ctx context.Context, namespace, name string) error
 func (f *Framework) GetPVC(ctx context.Context, namespace, name string) (*corev1.PersistentVolumeClaim, error) {
 	return f.ClientSet.CoreV1().PersistentVolumeClaims(namespace).Get(ctx, name, metav1.GetOptions{})
 }
-
-

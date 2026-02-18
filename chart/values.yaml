@@ -23,7 +23,7 @@ controller:
 
   image:
     repository: ghcr.io/evroc-oss/evroc-csi-driver
-    tag: v0.1.5
+    tag: v0.1.6
     pullPolicy: IfNotPresent
 
   # Resource limits and requests
@@ -58,7 +58,7 @@ controller:
 node:
   image:
     repository: ghcr.io/evroc-oss/evroc-csi-driver
-    tag: v0.1.5
+    tag: v0.1.6
     pullPolicy: IfNotPresent
 
   # Resource limits and requests for node daemonset

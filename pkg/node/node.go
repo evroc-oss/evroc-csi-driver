@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 evroc
 
-
 package node
 
 import (
@@ -52,7 +51,7 @@ type Service struct {
 	fs                 filesystem.Operations
 	kubeClient         kubernetes.Interface
 	nodeID             string
-	deviceByIDPath     string        // Overridable device path (for testing)
+	deviceByIDPath     string // Overridable device path (for testing)
 	logger             *slog.Logger
 	metrics            *metrics.Manager
 	maxVolumesPerNode  int64         // Maximum volumes per node

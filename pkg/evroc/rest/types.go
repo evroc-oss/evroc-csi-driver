@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 evroc
 
-
 // Package rest provides a client for the evroc REST API for Disk and HotswapDiskAttachment operations.
 package rest
 

@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 evroc
 
-
 //
 
 package types
@@ -16,9 +15,9 @@ import (
 // will detach the Disk from the VirtualMachine.
 type HotswapDiskAttachment struct {
 	metav1.TypeMeta `json:",inline"`
-	Metadata        EvrocMetadata                 `json:"metadata,omitempty"`
-	Spec            HotswapDiskAttachmentSpec     `json:"spec,omitempty"`
-	Status          HotswapDiskAttachmentStatus   `json:"status,omitempty"`
+	Metadata        EvrocMetadata               `json:"metadata,omitempty"`
+	Spec            HotswapDiskAttachmentSpec   `json:"spec,omitempty"`
+	Status          HotswapDiskAttachmentStatus `json:"status,omitempty"`
 }
 
 // Labels returns the userLabels for this attachment.
