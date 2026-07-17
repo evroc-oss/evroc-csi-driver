@@ -26,16 +26,6 @@ check_prerequisites() {
         fi
     done
 
-    # Validate GitHub credentials
-    if [ -z "${GITHUB_USERNAME:-}" ] || [ -z "${GITHUB_PAT:-}" ]; then
-        log_error "GHCR deployment requires GITHUB_USERNAME and GITHUB_PAT environment variables"
-        log_error ""
-        log_error "Example:"
-        log_error "  export GITHUB_USERNAME=yourname"
-        log_error "  export GITHUB_PAT=ghp_xxxxxxxxxxxx"
-        log_error "  $0"
-        exit 1
-    fi
 }
 
 # Setup k3s cluster

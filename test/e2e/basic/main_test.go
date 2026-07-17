@@ -9,13 +9,12 @@ import (
 const (
 	// topologyZone is the expected topology zone label for test cluster nodes
 	// Valid zones are: a, b, c
+	// TODO - this should be read-in from ansible/inventory/e2e-vms.yaml
 	topologyZone = "a"
 )
 
-var (
-	// Shared cluster kubeconfig for all tests
-	testKubeconfig string
-)
+// Shared cluster kubeconfig for all tests
+var testKubeconfig string
 
 // TestMain verifies prerequisites and runs tests
 // NOTE: Cluster provisioning is handled externally via setup-csi-driver.sh

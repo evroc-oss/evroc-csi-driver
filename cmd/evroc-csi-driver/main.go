@@ -15,10 +15,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/evroc-oss/evroc-csi-driver/pkg/auth"
 	"github.com/evroc-oss/evroc-csi-driver/pkg/config"
 	"github.com/evroc-oss/evroc-csi-driver/pkg/driver"
-	"github.com/evroc-oss/evroc-csi-driver/pkg/evroc/rest"
+	"github.com/evroc-oss/evroc-csi-driver/pkg/evroc/sdk"
 	"github.com/evroc-oss/evroc-csi-driver/pkg/filesystem"
 	"github.com/evroc-oss/evroc-csi-driver/pkg/metrics"
 	"github.com/evroc-oss/evroc-csi-driver/pkg/node"
@@ -107,9 +106,7 @@ func main() {
 			os.Exit(1)
 		}
 		logger.Info("Configuration loaded",
-			"restURL", evrocConfig.Evroc.RestURL,
-			"org", evrocConfig.Evroc.Organization,
-			"project", evrocConfig.Evroc.Project)
+			"configuration", evrocConfig.String())
 	case "node":
 		// Config is optional for node mode - try to load it but don't fail if missing
 		var err error
@@ -141,18 +138,10 @@ func main() {
 
 	// Create storage backend for controller mode
 	if *mode == string(driver.ControllerMode) || *mode == string(driver.AllMode) {
-		// Create auth client
-		authClient, err := auth.NewClient(context.Background(), evrocConfig, logger)
+		logger.Info("Initializing SDK storage backend")
+		storageBackend, err := sdk.NewSDKStorageBackend(context.Background(), evrocConfig, logger, metricsManager)
 		if err != nil {
-			logger.Error("Failed to create auth client", "error", err)
-			os.Exit(1)
-		}
-
-		// Create REST API storage backend
-		logger.Info("Initializing REST API backend")
-		storageBackend, err := rest.NewClient(context.Background(), authClient, evrocConfig, logger, metricsManager)
-		if err != nil {
-			logger.Error("Failed to create REST client", "error", err)
+			logger.Error("Failed to create SDK storage backend", "error", err)
 			os.Exit(1)
 		}
 		logger.Info("Storage backend initialized")

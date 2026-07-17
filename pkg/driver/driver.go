@@ -15,11 +15,10 @@ import (
 	"syscall"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
-	"github.com/evroc-oss/evroc-csi-driver/pkg/auth"
 	driverconfig "github.com/evroc-oss/evroc-csi-driver/pkg/config"
 	"github.com/evroc-oss/evroc-csi-driver/pkg/controller"
 	"github.com/evroc-oss/evroc-csi-driver/pkg/evroc"
-	"github.com/evroc-oss/evroc-csi-driver/pkg/evroc/rest"
+	"github.com/evroc-oss/evroc-csi-driver/pkg/evroc/sdk"
 	"github.com/evroc-oss/evroc-csi-driver/pkg/filesystem"
 	"github.com/evroc-oss/evroc-csi-driver/pkg/identity"
 	"github.com/evroc-oss/evroc-csi-driver/pkg/metrics"
@@ -134,24 +133,12 @@ func NewDriver(config *Config) (*Driver, error) {
 				return nil, fmt.Errorf("either StorageBackend or EvrocConfig is required for controller mode")
 			}
 
-			// Create auth client
-			authClient, err := auth.NewClient(context.Background(), config.EvrocConfig, logger)
+			sdkBackend, err := sdk.NewSDKStorageBackend(context.Background(), config.EvrocConfig, logger, config.Metrics)
 			if err != nil {
-				return nil, fmt.Errorf("failed to create auth client: %w", err)
+				return nil, fmt.Errorf("failed to create SDK storage backend: %w", err)
 			}
 
-			// Create REST API client
-			restClient, err := rest.NewClient(context.Background(), authClient, config.EvrocConfig, logger, config.Metrics)
-			if err != nil {
-				return nil, fmt.Errorf("failed to create REST API client: %w", err)
-			}
-
-			logger.Info("REST API client initialized",
-				"restURL", config.EvrocConfig.Evroc.RestURL,
-				"org", config.EvrocConfig.Evroc.Organization,
-				"project", config.EvrocConfig.Evroc.Project)
-
-			storageBackend = restClient
+			storageBackend = sdkBackend
 		}
 
 		if config.EvrocConfig == nil {

@@ -78,16 +78,8 @@ func (s *Service) collectAttachmentMetrics() {
 
 		// Count attachments by state
 		attachedCount := 0
-		for _, attachment := range attachments.Items {
-			// Check if the attachment is Ready
-			isReady := false
-			for _, cond := range attachment.Status.Conditions {
-				if cond.Type == "Ready" && cond.Status == "True" {
-					isReady = true
-					break
-				}
-			}
-			if isReady {
+		for i := range attachments.Items {
+			if evroc.IsAttachmentReady(&attachments.Items[i]) {
 				attachedCount++
 			}
 		}
@@ -366,7 +358,7 @@ func (s *Service) DeleteVolume(ctx context.Context, req *csi.DeleteVolumeRequest
 	var attachedNodes []string
 	for _, attachment := range attachmentList.Items {
 		if attachment.Spec.DiskRef == req.GetVolumeId() {
-			attachedNodes = append(attachedNodes, attachment.Spec.VMRef)
+			attachedNodes = append(attachedNodes, attachment.Spec.VirtualMachineRef)
 		}
 	}
 
@@ -603,15 +595,20 @@ func (s *Service) ListVolumes(ctx context.Context, req *csi.ListVolumesRequest) 
 			continue
 		}
 		diskName := attachment.Spec.DiskRef
-		vmName := attachment.Spec.VMRef
+		// Extract node name from full VM reference path for CSI node ID compatibility
+		// VMRef is "/compute/projects/.../virtualMachines/vm-name", extract "vm-name"
+		vmName := evroc.ExtractResourceName(attachment.Spec.VirtualMachineRef)
 		diskToVMs[diskName] = append(diskToVMs[diskName], vmName)
 	}
 
 	// Build all entries
 	var allEntries []*csi.ListVolumesResponse_Entry
 	for _, disk := range diskList.Items {
-		volumeID := disk.Metadata.ID
-		capacityBytes := int64(disk.Spec.DiskSize.Amount) * 1024 * 1024
+		volumeID := disk.Metadata.Id
+		var capacityBytes int64
+		if disk.Spec.DiskSize != nil {
+			capacityBytes = int64(disk.Spec.DiskSize.Amount) * 1024 * 1024
+		}
 
 		entry := &csi.ListVolumesResponse_Entry{
 			Volume: &csi.Volume{
@@ -682,9 +679,9 @@ func (s *Service) GetCapacity(ctx context.Context, req *csi.GetCapacityRequest) 
 	// Calculate total used capacity
 	var usedBytes int64
 	for _, disk := range diskList.Items {
-		// Convert disk size from MB to bytes
-		diskSizeBytes := int64(disk.Spec.DiskSize.Amount) * 1024 * 1024
-		usedBytes += diskSizeBytes
+		if disk.Spec.DiskSize != nil {
+			usedBytes += int64(disk.Spec.DiskSize.Amount) * 1024 * 1024
+		}
 	}
 
 	// Use configured total capacity (cannot be queried from API currently)

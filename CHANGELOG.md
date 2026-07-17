@@ -5,6 +5,31 @@ All notable changes to the evroc CSI driver will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [0.2.0] - 2026-07-17
+
+### Breaking:
+
+- Username and password access is **deprecated** but is no longer recommended - username and password based access still works but will be removed in a later release
+
+- The `.evroc.insecureTLS` configuration option has been removed from the credential file secrets
+
+- The following configuration options are **deprecated** and have moved to a different path in the schema (the legacy paths are still usable for back-compatibility purposes but will be removed in a later release)
+- `.evroc.restURL` (replaced by `.api.base_url`)
+- `.evroc.organization` (replaced by `.context.organization`)
+- `.evroc.project` (replaced by `.context.project`)
+- `.evroc.insecureTLS` - fully removed
+- `infrastructure.region` (replaced by `.context.region`)
+
+### Added
+- Support for service accounts and refresh tokens
+
+### Changed
+
+- Moved to using [evroc SDK](https://github.com/evroc-oss/evroc-go-sdk)
+
+
 ## [0.1.6] - 2026-02-18
 
 ### Changed
@@ -98,11 +123,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 **Authentication:**
 - OIDC Resource Owner Password Credentials (ROPC) flow
-- Automatic token refresh (50-minute interval)
+- Automatic token refresh before token expiration
 - Thread-safe token management
 
 **Storage Backend:**
-- REST API endpoint: `https://api.cloud.evroc.com`
+- REST API endpoint: `https://api.evroc.com`
 - OIDC issuer: `https://authn.iam.evroc.com/realms/evroc-customer`
 - API version: `compute/v1alpha2`
 
@@ -126,7 +151,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 [0.1.0]: https://github.com/evroc-oss/evroc-csi-driver/releases/tag/v0.1.0
 
-[Unreleased]: https://github.com/evroc-oss/evroc-csi-driver/compare/v0.1.4...HEAD
+[Unreleased]: https://github.com/evroc-oss/evroc-csi-driver/compare/v0.2.0...HEAD
 [0.1.4]: https://github.com/evroc-oss/evroc-csi-driver/releases/tag/v0.1.4
 [0.1.5]: https://github.com/evroc-oss/evroc-csi-driver/releases/tag/v0.1.5
 [0.1.6]: https://github.com/evroc-oss/evroc-csi-driver/releases/tag/v0.1.6
+[0.2.0]: https://github.com/evroc-oss/evroc-csi-driver/releases/tag/v0.2.0

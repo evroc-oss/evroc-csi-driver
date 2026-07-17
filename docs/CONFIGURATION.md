@@ -19,7 +19,7 @@ The configuration is provided as a YAML file with the following structure:
 ```yaml
 # evroc platform configuration
 evroc:
-  restURL: https://api.cloud.evroc.com                      # Optional
+  restURL: https://api.evroc.com                      # Optional
   organization: <orgId>                                     # Required
   project: <projectId>                                      # Required
 
@@ -45,7 +45,7 @@ csi:
 
 | Field | Required | Default | Description |
 |-------|----------|---------|-------------|
-| `restURL` | No | `https://api.cloud.evroc.com` | evroc REST API server URL |
+| `restURL` | No | `https://api.evroc.com` | evroc REST API server URL |
 | `organization` | Yes | - | Organization identifier in evroc |
 | `project` | Yes | - | Project identifier where VMs and disks are created |
 
@@ -204,10 +204,10 @@ kubectl apply -f deploy/kubernetes/metrics-service.yaml  # optional
 kubectl get deployment -n kube-system evroc-csi-controller
 
 # Check node pods are running on all nodes
-kubectl get daemonset -n kube-system evroc-csi-node
+kubectl get daemonset -n kube-system evroc-csi-driver
 
 # Check CSI driver is registered
-kubectl get csidrivers csi.evroc.com
+kubectl get csidrivers disk.csi.evroc.com
 ```
 
 #### How the Configuration is Mounted
@@ -249,7 +249,7 @@ The node DaemonSet must be deployed on all nodes but does not require configurat
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
-  name: evroc-csi-node
+  name: evroc-csi-driver
   namespace: kube-system
 spec:
   template:
@@ -577,7 +577,7 @@ The driver includes a Kubernetes Service for Prometheus scraping:
 apiVersion: v1
 kind: Service
 metadata:
-  name: evroc-csi-metrics
+  name: evroc-csi-controller-metrics
   namespace: kube-system
 spec:
   selector:
@@ -603,12 +603,12 @@ scrape_configs:
     relabel_configs:
       - source_labels: [__meta_kubernetes_service_name]
         action: keep
-        regex: evroc-csi-metrics
+        regex: evroc-csi-controller-metrics
 ```
 
 ### Grafana Dashboard
 
-A sample Grafana dashboard is provided in `chart/grafana-dashboard.json`. Import this dashboard to visualize:
+Sample Grafana dashboards are provided in `dashboards/operational.json`, `dashboards/developer.json`, and `dashboards/production.json`. Import one to visualize:
 
 - Volume operation success/failure rates
 - API call latency and error rates
@@ -619,7 +619,7 @@ To import the dashboard:
 
 1. Open Grafana
 2. Navigate to Dashboards → Import
-3. Upload `chart/grafana-dashboard.json`
+3. Upload one of the dashboard JSON files from the `dashboards/` directory
 4. Select your Prometheus datasource
 
 ### Available Metrics

@@ -86,6 +86,21 @@ func (m *MockFilesystemOperations) FormatDevice(ctx context.Context, devicePath,
 	return nil
 }
 
+// RepairFilesystem attempts to repair a filesystem (mock always succeeds)
+func (m *MockFilesystemOperations) RepairFilesystem(ctx context.Context, devicePath, fsType string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// Verify device exists
+	if _, err := os.Stat(devicePath); err != nil {
+		return fmt.Errorf("device does not exist: %w", err)
+	}
+
+	// Mock fsck always succeeds - in real tests we would simulate failures
+	m.logger.Info("Mock filesystem repair successful", "path", devicePath, "fsType", fsType)
+	return nil
+}
+
 // IsBlockDevice checks if a path is a block device (mock checks if it's in our device manager)
 func (m *MockFilesystemOperations) IsBlockDevice(path string) (bool, error) {
 	// In our mock, all files in the mock device directory are considered block devices

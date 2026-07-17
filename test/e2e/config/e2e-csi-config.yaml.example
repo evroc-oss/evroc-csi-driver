@@ -6,30 +6,17 @@
 # 2. Replace all YOUR_*_HERE placeholders with actual values
 # 3. The e2e-csi-config.yaml file is gitignored to protect credentials
 
-evroc:
-  # REST API base URL
-  restURL: "https://api.cloud.evroc.com"
+auth:
+  # Create SA:         evroc iam serviceaccount create csi-e2e
+  # Create credential: evroc iam serviceaccount credential create csi-e2e-key --service-account csi-e2e
+  # Assign role:
+  #   evroc iam rolebinding assign --principal "/iam/projects/<project-id>/serviceAccounts/csi-e2e" --role /iam/roles/kubernetesCSIAgent
+  service_account_id: "csi-e2e"
+  service_account_secret: "your-jwk-private-key-from-credential-create"
 
-  # Organization and project for resources
+context:
   organization: "YOUR_ORG_ID_HERE"
   project: "YOUR_PROJECT_ID_HERE"
-
-  # Skip TLS verification for local testing (NEVER use in production)
-  insecureTLS: false
-
-auth:
-  # OIDC issuer endpoint
-  issuerURL: "https://authn.iam.evroc.com/realms/evroc-customer"
-
-  # OAuth2 client ID
-  clientID: "csi-driver"
-
-  # Credentials
-  username: "YOUR_USERNAME_HERE"
-  password: "YOUR_PASSWORD_HERE"
-
-infrastructure:
-  # Cloud region (required for REST API)
   region: "se-sto"
 
 csi:

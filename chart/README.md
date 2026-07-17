@@ -61,9 +61,9 @@ rm config.yaml
 Install directly from a GitHub Release:
 
 ```bash
-# Replace v0.1.0 with the desired version
+# Replace v0.1.6 with the desired version
 helm install evroc-csi-driver \
-  https://github.com/evroc-oss/evroc-csi-driver/releases/download/v0.1.0/evroc-csi-driver-0.1.0.tgz \
+  https://github.com/evroc-oss/evroc-csi-driver/releases/download/v0.1.6/evroc-csi-driver-0.1.6.tgz \
   --namespace kube-system \
   --set evroc.existingConfigSecret="evroc-credentials"
 ```
@@ -74,7 +74,7 @@ All Helm charts are signed with Cosign for supply chain security. To verify:
 
 ```bash
 # Download chart and signature files
-VERSION=0.1.0
+VERSION=0.1.6
 wget https://github.com/evroc-oss/evroc-csi-driver/releases/download/v${VERSION}/evroc-csi-driver-${VERSION}.tgz
 wget https://github.com/evroc-oss/evroc-csi-driver/releases/download/v${VERSION}/evroc-csi-driver-${VERSION}.tgz.sig
 wget https://github.com/evroc-oss/evroc-csi-driver/releases/download/v${VERSION}/evroc-csi-driver-${VERSION}.tgz.pem
@@ -142,9 +142,9 @@ The following table lists other configurable parameters of the evroc CSI driver 
 |-----------|-------------|---------|
 | `controller.replicas` | Number of controller replicas | `1` |
 | `controller.image.repository` | Controller image repository | `ghcr.io/evroc-oss/evroc-csi-driver` |
-| `controller.image.tag` | Controller image tag | `v0.1.0` |
+| `controller.image.tag` | Controller image tag | `v0.1.6` |
 | `node.image.repository` | Node plugin image repository | `ghcr.io/evroc-oss/evroc-csi-driver` |
-| `node.image.tag` | Node plugin image tag | `v0.1.0` |
+| `node.image.tag` | Node plugin image tag | `v0.1.6` |
 | `storageClass.create` | Create default storage class | `true` |
 | `storageClass.name` | Storage class name | `evroc-standard` |
 | `storageClass.isDefault` | Set as default storage class | `false` |
@@ -157,7 +157,7 @@ The CSI driver uses a `config.yaml` file with the following structure:
 
 ```yaml
 evroc:
-  restURL: "https://api.cloud.evroc.com"  # optional, this is the default
+  restURL: "https://api.evroc.com"  # optional, this is the default
   organization: "your-org-id"             # required
   project: "your-project-id"              # required
 
@@ -182,7 +182,7 @@ csi:  # optional
 - `infrastructure.region` - evroc region (e.g., `se-sto`)
 
 **Optional fields with defaults:**
-- `evroc.restURL` - Defaults to `https://api.cloud.evroc.com`
+- `evroc.restURL` - Defaults to `https://api.evroc.com`
 - `auth.issuerURL` - Defaults to `https://authn.iam.evroc.com/realms/evroc-customer`
 - `auth.clientID` - Defaults to `csi-driver`
 - `csi.identifier` - Only needed when running multiple clusters in the same project
@@ -271,7 +271,7 @@ spec:
 ## Uninstalling
 
 ```bash
-helm uninstall evroc-csi --namespace evroc-csi-system
+helm uninstall evroc-csi-driver --namespace kube-system
 ```
 
 ## Troubleshooting
@@ -279,13 +279,13 @@ helm uninstall evroc-csi --namespace evroc-csi-system
 ### Check Controller Logs
 
 ```bash
-kubectl logs -n evroc-csi-system -l app.kubernetes.io/component=controller -c evroc-csi-driver
+kubectl logs -n kube-system -l app.kubernetes.io/component=controller -c evroc-csi-driver
 ```
 
 ### Check Node Plugin Logs
 
 ```bash
-kubectl logs -n evroc-csi-system -l app.kubernetes.io/component=node -c evroc-csi-driver
+kubectl logs -n kube-system -l app.kubernetes.io/component=node -c evroc-csi-driver
 ```
 
 ### Verify CSI Driver Registration
@@ -297,7 +297,7 @@ kubectl get csidriver disk.csi.evroc.com
 ### Check Events
 
 ```bash
-kubectl get events -n evroc-csi-system --sort-by='.lastTimestamp'
+kubectl get events -n kube-system --sort-by='.lastTimestamp'
 ```
 
 ## Development
@@ -309,10 +309,10 @@ To test the chart locally:
 helm lint ./chart
 
 # Render templates
-helm template evroc-csi ./chart --namespace evroc-csi-system
+helm template evroc-csi ./chart --namespace kube-system
 
 # Dry run install
-helm install evroc-csi ./chart --namespace evroc-csi-system --dry-run --debug
+helm install evroc-csi ./chart --namespace kube-system --dry-run --debug
 ```
 
 ## License

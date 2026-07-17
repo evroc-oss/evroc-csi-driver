@@ -7,7 +7,47 @@
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![Go Report Card](https://goreportcard.com/badge/github.com/evroc-oss/evroc-csi-driver)](https://goreportcard.com/report/github.com/evroc-oss/evroc-csi-driver)
 
-A Container Storage Interface (CSI) driver for evroc, implementing the CSI specification with full storage backend integration using the evroc REST API.
+A Container Storage Interface (CSI) driver for evroc, implementing the [CSI specification](https://github.com/container-storage-interface/spec/blob/master/spec.md) with full storage backend integration using the evroc REST API.
+
+## Table of Contents
+
+- [Overview](#overview)
+- [Features](#features)
+- [Prerequisites](#prerequisites)
+  - [Development Requirements](#development-requirements)
+  - [Node Runtime Requirements](#node-runtime-requirements)
+    - [Required Packages](#required-packages)
+    - [Installation by Distribution](#installation-by-distribution)
+- [Quick Start](#quick-start)
+  - [Development](#development)
+  - [Installation (Production)](#installation-production)
+    - [Prerequisites](#prerequisites-1)
+    - [Step 1: Label Your Nodes](#step-1-label-your-nodes)
+    - [Step 2: Create Configuration Secret](#step-2-create-configuration-secret)
+    - [Step 3: Install via Helm](#step-3-install-via-helm)
+    - [Step 4: Verify Installation](#step-4-verify-installation)
+  - [Deployment (Development)](#deployment-development)
+- [Project Structure](#project-structure)
+- [Configuration](#configuration)
+  - [Command-Line Flags](#command-line-flags)
+  - [Configuration File](#configuration-file)
+- [Features and Limitations](#features-and-limitations)
+  - [Supported Features](#supported-features)
+  - [Current Limitations](#current-limitations)
+- [Development](#development-1)
+  - [Testing](#testing)
+  - [Code Quality](#code-quality)
+- [Makefile Targets](#makefile-targets)
+- [Kubernetes Manifests](#kubernetes-manifests)
+- [Security](#security)
+  - [Image and Chart Signing](#image-and-chart-signing)
+    - [Verify Docker Image Signature](#verify-docker-image-signature)
+    - [Verify Helm Chart Signature](#verify-helm-chart-signature)
+    - [Verify SBOM Attestation](#verify-sbom-attestation)
+    - [Verify SLSA Provenance](#verify-slsa-provenance)
+  - [Supply Chain Security](#supply-chain-security)
+- [License](#license)
+- [Support](#support)
 
 ## Overview
 
@@ -20,27 +60,45 @@ The driver integrates with evroc's REST API to manage persistent storage volumes
 
 ## Features
 
-- Full CSI specification compliance (v1.12.0)
-- evroc REST API integration for volume and attachment management
-- OIDC/OAuth2 authentication with automatic token refresh
-- ext4 filesystem support with device formatting
-- Volume staging and publishing with proper mount handling
-- Topology awareness for zone-based scheduling
-- Comprehensive logging of all CSI operations
-- Kubernetes integration with DaemonSet deployment
-- Multi-stage Docker build for minimal image size
+**Volume Operations:**
+- ✅ Volume creation and deletion via evroc Disk resources
+- ✅ Volume attachment/detachment via HotSwapDiskAttachment resources
+- ✅ Volume staging with ext4 filesystem formatting
+- ✅ Volume publishing to pods (mount and bind mount)
+- ✅ Volume statistics reporting
 
-## Prerequisites
+**Access Modes:**
+- ✅ ReadWriteOnce (RWO) - Single node read-write
+- ✅ ReadWriteOncePod (RWOPod) - Single pod read-write
+- ✅ ReadOnlyMany (ROX) - Multiple nodes read-only (filesystem volumes only)
 
-### Development Requirements
+**Volume Types:**
+- ✅ Filesystem volumes (ext4)
+- ✅ Block volumes (raw block devices)
 
-- Go 1.24 or later
-- Docker (for containerized deployment)
-- Kubernetes cluster (for deployment testing)
-- kubectl configured to access your cluster
-- [golangci-lint](https://golangci-lint.run/usage/install/) (for linting)
+### Current Limitations
 
-### Node Runtime Requirements
+**Filesystem Support:**
+- ❌ Other filesystems (xfs, btrfs, etc.) are not implemented
+
+**Volume Features:**
+- ❌ Volume snapshots - Not implemented
+- ❌ Volume cloning - Not implemented
+- ❌ Volume expansion - Not implemented
+
+**Access Modes:**
+- ❌ ReadOnlyMany (ROX) is not supported for block volumes
+
+## Deploying evroc CSI Driver
+
+### Prerequisites
+
+- Kubernetes 1.28.0+
+- Helm 3.0+ (for Helm installation)
+- Kubernetes nodes must be evroc VMs
+- You must know what zone (one of 'a', 'b', or 'c') your VMs are in. 
+
+#### Node Runtime Requirements
 
 **Important:** Kubernetes nodes must be evroc VMs. The CSI driver attaches evroc disks to nodes via the evroc REST API, which requires nodes to be running as VMs within the evroc platform.
 
@@ -78,36 +136,7 @@ sudo apk add util-linux e2fsprogs
 
 **Note:** Most Linux distributions include `util-linux` by default, but `e2fsprogs` may need to be installed separately.
 
-## Quick Start
-
-### Development
-
-1. **Build the driver:**
-   ```bash
-   make build
-   ```
-
-2. **Run tests:**
-   ```bash
-   make test
-   ```
-
-3. **Run linters:**
-   ```bash
-   make lint
-   ```
-   Note: Requires [golangci-lint](https://golangci-lint.run/usage/install/) to be installed.
-
-### Installation (Production)
-
-#### Prerequisites
-
-- Kubernetes 1.28.0+
-- Helm 3.0+ (for Helm installation)
-- Kubernetes nodes must be evroc VMs
-- Nodes must have `topology.kubernetes.io/zone` label set to one of: `a`, `b`, or `c`
-- evroc platform credentials (username and password)
-    - Request a service account from evroc support.
+### Installation
 
 #### Step 1: Label Your Nodes
 
@@ -119,71 +148,73 @@ kubectl label node <node-name> topology.kubernetes.io/zone=a
 
 Valid zone values: `a`, `b`, or `c`
 
-#### Step 2: Create Configuration Secret
+You should run e.g. `evroc compute vm get <vm name>` to determine what zone a VM is in
 
-Create a configuration file with your evroc credentials:
+#### Step 2: Create a service account
+
+The CSI driver needs a service account with permissions to manage disks and attach them to VMs. Create one using the [evroc CLI](https://docs.evroc.com/cli.html):
+
+**1) Create the service account:**
 
 ```bash
-# Create config.yaml
-cat > config.yaml <<EOF
-evroc:
-  organization: "your-org-id"
-  project: "your-project-id"
+evroc iam serviceaccount create csi-driver
+```
 
+**2) Create a credential for the service account:**
+
+```bash
+evroc iam serviceaccount credential create csi-driver-key --service-account csi-driver
+```
+
+Save the private key output — it is only shown once. This is the `service_account_secret` value for your config.
+
+**3) Assign required roles:**
+
+The service account needs permissions to manage disks and disk attachments to VMs:
+
+```bash
+SA_PRINCIPAL="/iam/projects/<your-project-id>/serviceAccounts/csi-driver"
+
+evroc iam rolebinding assign --principal "$SA_PRINCIPAL" --role /iam/roles/kubernetesCSIAgent
+```
+
+#### Step 3: Create Configuration Secret
+
+Create a configuration file using the credentials from Step 2:
+
+```bash
+cat > /tmp/evroc-csi-config.yaml <<EOF
 auth:
-  username: "service-account@evroc.com"
-  password: "your-password"
+  service_account_id: "csi-driver"
+  service_account_secret: "your-jwk-private-key-from-credential-create"
 
-infrastructure:
+context:
+  organization: "your-organization-id"
+  project: "your-project-id"
   region: "se-sto"
 EOF
 
-# Create the secret in kube-system namespace
 kubectl create secret generic evroc-credentials \
   --namespace=kube-system \
-  --from-file=config.yaml=config.yaml
+  --from-file=config.yaml=/tmp/evroc-csi-config.yaml
 
-# Clean up the config file
-rm config.yaml
+rm /tmp/evroc-csi-config.yaml
 ```
 
-#### Step 3: Install via Helm
+#### Step 4: Install via Helm
 
 Install the CSI driver using Helm:
 
 ```bash
 helm install evroc-csi-driver \
-  https://github.com/evroc-oss/evroc-csi-driver/releases/download/v0.1.0/evroc-csi-driver-0.1.0.tgz \
+  https://github.com/evroc-oss/evroc-csi-driver/releases/download/v0.1.6/evroc-csi-driver-0.1.6.tgz \
   --namespace kube-system \
   --set evroc.existingConfigSecret=evroc-credentials
 ```
 
-**Optional: Verify Helm chart signature before installation**
+You may want to verify the supply chain security of this artefact before deploying, if so, follow [this document](SUPPLY_CHAIN_SECURITY.md).
 
-```bash
-# Install Cosign (if not already installed)
-# See: https://docs.sigstore.dev/cosign/installation/
-
-# Download chart and signature files
-VERSION=0.1.0
-wget https://github.com/evroc-oss/evroc-csi-driver/releases/download/v${VERSION}/evroc-csi-driver-${VERSION}.tgz
-wget https://github.com/evroc-oss/evroc-csi-driver/releases/download/v${VERSION}/evroc-csi-driver-${VERSION}.tgz.sig
-wget https://github.com/evroc-oss/evroc-csi-driver/releases/download/v${VERSION}/evroc-csi-driver-${VERSION}.tgz.pem
-
-# Verify the signature (keyless)
-cosign verify-blob evroc-csi-driver-${VERSION}.tgz \
-  --signature evroc-csi-driver-${VERSION}.tgz.sig \
-  --certificate evroc-csi-driver-${VERSION}.tgz.pem \
-  --certificate-identity-regexp="^https://github.com/evroc-oss/evroc-csi-driver/" \
-  --certificate-oidc-issuer="https://token.actions.githubusercontent.com"
-
-# Install the verified chart
-helm install evroc-csi-driver ./evroc-csi-driver-${VERSION}.tgz \
-  --namespace kube-system \
-  --set evroc.existingConfigSecret=evroc-credentials
-```
-
-#### Step 4: Verify Installation
+#### Step 5: Verify Installation
 
 Check that the CSI driver pods are running:
 
@@ -200,268 +231,38 @@ kubectl get storageclass evroc-standard
 
 See the [Helm chart README](chart/README.md) for detailed configuration options and the [Configuration Guide](docs/CONFIGURATION.md) for advanced configuration.
 
-### Deployment (Development)
+## Usage Example
 
-For development and testing:
+Once the evroc CSI driver is installed, you can create a `PersistentVolumeClaim` and mount it into a pod using the `evroc-standard` StorageClass.
 
-1. **Build and push Docker image:**
-   ```bash
-   make docker
-   make push
-   ```
+### Step 1: Create a PersistentVolumeClaim
 
-   Or set a custom registry:
-   ```bash
-   DOCKER_REGISTRY=your-registry.com/your-org make docker push
-   ```
-
-2. **Install to Kubernetes:**
-   ```bash
-   make install
-   ```
-
-3. **View logs:**
-   ```bash
-   make logs
-   ```
-
-4. **Uninstall:**
-   ```bash
-   make uninstall
-   ```
-
-## Project Structure
-
-```
-.
-├── cmd/
-│   └── evroc-csi-driver/      # Main CSI driver entry point
-├── pkg/
-│   ├── auth/                  # OIDC/OAuth2 authentication
-│   ├── common/                # Common validation helpers
-│   ├── config/                # Configuration loading and validation
-│   ├── controller/            # CSI Controller Service
-│   ├── driver/                # Driver orchestration
-│   ├── evroc/                 # evroc REST API client and storage backend
-│   ├── filesystem/            # Filesystem operations (format, mount, etc.)
-│   ├── identity/              # CSI Identity Service
-│   ├── metrics/               # Prometheus metrics
-│   ├── node/                  # CSI Node Service
-│   └── version/               # Version information
-├── chart/                     # Helm chart for deployment
-│   ├── dashboards/            # Grafana dashboard configurations
-│   └── templates/             # Helm templates
-├── deploy/
-│   └── kubernetes/            # Kubernetes manifests
-│       ├── csidriver.yaml     # CSIDriver object
-│       ├── rbac.yaml          # RBAC permissions
-│       ├── daemonset.yaml     # Node service DaemonSet
-│       ├── controller.yaml    # Controller service Deployment
-│       ├── storageclass.yaml  # StorageClass definition
-│       ├── metrics-service.yaml # Metrics service for Prometheus
-│       ├── example-pvc.yaml   # Example PersistentVolumeClaim
-│       ├── example-pod.yaml   # Example Pod using PVC
-│       └── examples/
-│           └── config.yaml    # Example driver configuration
-├── test/
-│   ├── mocks/                 # Mock implementations for testing
-│   ├── sanity/                # CSI sanity tests
-│   └── benchmarks/            # Performance benchmarks
-├── docs/                      # Architecture and design documentation
-├── CHANGELOG.md               # Version history and release notes
-├── CONTRIBUTING.md            # Contribution guidelines
-├── Dockerfile                 # Multi-stage Docker build
-├── Makefile                   # Build and deployment tasks
-└── README.md                  # This file
-```
-
-## Configuration
-
-### Command-Line Flags
-
-- `--endpoint` - CSI endpoint Unix socket path (default: `/tmp/csi.sock`)
-- `--node-id` - Node ID for CSI operations (default: hostname)
-- `--mode` - Driver mode: `controller`, `node`, or `all` (default: `all`)
-
-### Configuration File
-
-The driver requires a YAML configuration file mounted at `/etc/evroc-csi/config.yaml`. See `deploy/kubernetes/examples/config.yaml` for a complete example.
-
-**Minimal required configuration:**
-```yaml
-evroc:
-  organization: <orgId>
-  project: <projectId>
-
-auth:
-  username: my-username         # OIDC username
-  password: my-password         # OIDC password
-```
-
-**Optional fields with defaults:**
-- `evroc.restURL` - REST API endpoint (defaults to `https://api.cloud.evroc.com`)
-- `auth.issuerURL` - OIDC issuer (defaults to `https://authn.iam.evroc.com/realms/evroc-customer`)
-- `auth.clientID` - OAuth2 client ID (defaults to `csi-driver`)
-- `infrastructure.region` - Cloud region (e.g., `se-sto`)
-- `csi.identifier` - Unique driver instance ID (optional)
-
-## Features and Limitations
-
-### Supported Features
-
-**Volume Operations:**
-- ✅ Volume creation and deletion via evroc Disk resources
-- ✅ Volume attach/detach via HotSwapDiskAttachment resources
-- ✅ Volume staging with ext4 filesystem formatting
-- ✅ Volume publishing to pods (mount and bind mount)
-- ✅ Volume statistics reporting
-
-**Access Modes:**
-- ✅ ReadWriteOnce (RWO) - Single node read-write
-- ✅ ReadWriteOncePod (RWOPod) - Single pod read-write
-- ✅ ReadOnlyMany (ROX) - Multiple nodes read-only (filesystem volumes only)
-
-**Volume Types:**
-- ✅ Filesystem volumes (ext4)
-- ✅ Block volumes (raw block devices)
-
-**Additional Features:**
-- ✅ Topology-aware scheduling (zone-based)
-- ✅ OIDC authentication with automatic token refresh
-- ✅ Idempotent operations
-
-### Current Limitations
-
-**Filesystem Support:**
-- ❌ Only ext4 filesystem is currently supported
-- ❌ Other filesystems (xfs, btrfs, etc.) are not implemented
-
-**Volume Features:**
-- ❌ Volume snapshots - Not implemented
-- ❌ Volume cloning - Not implemented
-- ❌ Volume expansion - Not implemented
-
-**Access Modes:**
-- ❌ ReadOnlyMany (ROX) is not supported for block volumes
-
-## Development
-
-### Testing
-
-Run tests with:
-```bash
-make test
-```
-
-Run with coverage:
-```bash
-go test -v -race -coverprofile=coverage.txt ./...
-```
-
-### Code Quality
-
-Format code:
-```bash
-make fmt
-```
-
-Run static analysis:
-```bash
-make vet
-```
-
-Run all checks:
-```bash
-make verify
-```
-
-## Makefile Targets
-
-| Target | Description |
-|--------|-------------|
-| `make build` | Build the driver binary |
-| `make run` | Run the driver locally |
-| `make test` | Run tests |
-| `make lint` | Run linters |
-| `make clean` | Clean build artifacts |
-| `make docker` | Build Docker image |
-| `make push` | Push Docker image to registry |
-| `make generate` | Run code generation (placeholder) |
-| `make manifest` | View Kubernetes manifests |
-| `make install` | Install to Kubernetes cluster |
-| `make uninstall` | Uninstall from Kubernetes cluster |
-| `make logs` | View driver logs from Kubernetes |
-| `make verify` | Run all verification checks |
-
-## Kubernetes Manifests
-
-The driver is deployed as a DaemonSet that runs on all nodes. It includes:
-
-- **CSIDriver object** - Declares the driver to Kubernetes
-- **ServiceAccount, ClusterRole, ClusterRoleBinding** - RBAC permissions
-- **DaemonSet** - Runs driver on all nodes with:
-  - Main driver container
-  - CSI node-driver-registrar sidecar
-
-## Security
-
-### Image and Chart Signing
-
-All Docker images and Helm charts are signed with [Cosign](https://github.com/sigstore/cosign) using keyless signing via GitHub OIDC. This ensures the authenticity and integrity of released artifacts.
-
-#### Verify Docker Image Signature
-
-Install Cosign and verify the image signature:
+Apply the [example PVC](deploy/kubernetes/examples/example-pvc.yaml):
 
 ```bash
-# Install Cosign (if not already installed)
-# See: https://docs.sigstore.dev/cosign/installation/
-
-# Verify image signature (keyless)
-cosign verify \
-  --certificate-identity-regexp="^https://github.com/evroc-oss/evroc-csi-driver/" \
-  --certificate-oidc-issuer="https://token.actions.githubusercontent.com" \
-  ghcr.io/evroc-oss/evroc-csi-driver:v0.1.0
+kubectl apply -f https://raw.githubusercontent.com/evroc-oss/evroc-csi-driver/main/deploy/kubernetes/examples/example-pvc.yaml
 ```
 
-#### Verify Helm Chart Signature
+### Step 2: Create a Pod using the PVC
+
+Apply the [example Pod](deploy/kubernetes/examples/example-pod.yaml):
 
 ```bash
-# Verify Helm chart signature (keyless)
-cosign verify \
-  --certificate-identity-regexp="^https://github.com/evroc-oss/evroc-csi-driver/" \
-  --certificate-oidc-issuer="https://token.actions.githubusercontent.com" \
-  oci://ghcr.io/evroc-oss/evroc-csi-driver:0.1.0
+kubectl apply -f https://raw.githubusercontent.com/evroc-oss/evroc-csi-driver/main/deploy/kubernetes/examples/example-pod.yaml
 ```
 
-#### Verify SBOM Attestation
+### Step 3: Verify the Volume
 
 ```bash
-# Verify and view SBOM attestation
-cosign verify-attestation \
-  --type spdxjson \
-  --certificate-identity-regexp="^https://github.com/evroc-oss/evroc-csi-driver/" \
-  --certificate-oidc-issuer="https://token.actions.githubusercontent.com" \
-  ghcr.io/evroc-oss/evroc-csi-driver:v0.1.0
+# Check that the PVC is bound
+kubectl get pvc evroc-test-pvc
+
+# Check that the pod is running
+kubectl get pod evroc-test-pod
+
+# Read the test file written to the volume
+kubectl logs evroc-test-pod
 ```
-
-#### Verify SLSA Provenance
-
-```bash
-# Verify SLSA provenance attestation
-cosign verify-attestation \
-  --type slsaprovenance \
-  --certificate-identity-regexp="^https://github.com/evroc-oss/evroc-csi-driver/" \
-  --certificate-oidc-issuer="https://token.actions.githubusercontent.com" \
-  ghcr.io/evroc-oss/evroc-csi-driver:v0.1.0
-```
-
-### Supply Chain Security
-
-- **Signed Images**: All images and charts are cryptographically signed with Cosign
-- **SBOM**: Software Bill of Materials (SPDX format) attached to each release
-- **SLSA Provenance**: Build provenance attestations for supply chain transparency
-- **Pinned Actions**: GitHub Actions are pinned to commit SHAs to prevent supply chain attacks
 
 ## License
 

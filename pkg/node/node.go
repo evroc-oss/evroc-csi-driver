@@ -135,7 +135,7 @@ func (s *Service) NodeStageVolume(ctx context.Context, req *csi.NodeStageVolumeR
 
 	// Wait for the device to appear
 	if err := s.fs.WaitForDevice(ctx, devicePath, s.deviceScanTimeout); err != nil {
-		s.logger.Error("Device not found - disk may not be attached to VM",
+		s.logger.Warn("Device not found - disk may not be attached to VM",
 			"volumeID", volumeID,
 			"devicePath", devicePath,
 			"timeout", s.deviceScanTimeout,
@@ -199,12 +199,6 @@ func (s *Service) NodeStageVolume(ctx context.Context, req *csi.NodeStageVolumeR
 			"devicePath", devicePath,
 			"stagingPath", stagingPath)
 
-		// Check if device needs formatting
-		formatted, err := s.fs.IsDeviceFormatted(ctx, devicePath)
-		if err != nil {
-			return nil, status.Errorf(codes.Internal, "check device format: %v", err)
-		}
-
 		// Determine filesystem type
 		fsType := DefaultFSType
 		if volCap := req.GetVolumeCapability(); volCap != nil {
@@ -213,29 +207,145 @@ func (s *Service) NodeStageVolume(ctx context.Context, req *csi.NodeStageVolumeR
 			}
 		}
 
-		// Format if needed
-		if !formatted {
-			if err := s.fs.FormatDevice(ctx, devicePath, fsType); err != nil {
-				return nil, status.Errorf(codes.Internal, "format device: %v", err)
-			}
-		}
-
-		// Create target directory and mount
+		// Create staging directory
 		if err := s.fs.MkdirAll(stagingPath, 0o750); err != nil {
 			return nil, status.Errorf(codes.Internal, "create staging path: %v", err)
 		}
 
+		// Try to mount first - this is the ultimate test of filesystem validity
+		// If the device is already formatted with a valid filesystem, this will succeed
 		var flags uintptr
-		if err := s.fs.Mount(devicePath, stagingPath, fsType, flags, ""); err != nil {
-			s.metrics.RecordNodeOperationError("stage", time.Since(startTime).Seconds(), "mount_failed")
-			return nil, status.Errorf(codes.Internal, "mount device: %v", err)
-		}
+		err = s.fs.Mount(devicePath, stagingPath, fsType, flags, "")
+		if err != nil {
+			s.logger.Info("Initial mount failed",
+				"volumeID", volumeID,
+				"devicePath", devicePath,
+				"error", err)
 
-		s.logger.Info("Successfully staged volume",
-			"volumeID", volumeID,
-			"devicePath", devicePath,
-			"stagingPath", stagingPath,
-			"fsType", fsType)
+			// Only handle the 3 specific errors that indicate filesystem corruption:
+			// EINVAL (invalid superblock), EIO (I/O error), EUCLEAN (needs fsck)
+			// For brand new volumes: format is allowed
+			// For volumes with data: repair only (no reformat), error if repair fails
+			// ALL other errors (EMFILE, ENOMEM, EACCES, EBUSY, etc.) should NOT trigger format/repair
+			if !filesystem.IsFilesystemCorruption(err) {
+				s.logger.Error("Mount failed - not attempting format or repair (not filesystem corruption)",
+					"volumeID", volumeID,
+					"devicePath", devicePath,
+					"error", err)
+				s.metrics.RecordNodeOperationError("stage", time.Since(startTime).Seconds(), "mount_failed")
+				return nil, status.Errorf(codes.Internal,
+					"mount failed: %v", err)
+			}
+
+			// Mount failed with corruption indicator (EINVAL/EIO/EUCLEAN)
+			// Check if device has filesystem signature
+			formatted, checkErr := s.fs.IsDeviceFormatted(ctx, devicePath)
+			if checkErr != nil {
+				s.logger.Warn("Failed to check device format status",
+					"devicePath", devicePath,
+					"error", checkErr)
+				formatted = false
+			}
+
+			if formatted {
+				// Volume has been formatted before - it may contain user data
+				// We MUST NOT automatically reformat as that would cause data loss
+				s.logger.Info("Volume has been formatted before, attempting repair only (will NOT reformat)",
+					"volumeID", volumeID,
+					"devicePath", devicePath,
+					"fsType", fsType)
+
+				// Try to repair filesystem
+				repairErr := s.fs.RepairFilesystem(ctx, devicePath, fsType)
+				if repairErr == nil {
+					// Repair succeeded, retry mount
+					s.logger.Info("Filesystem repair successful, retrying mount",
+						"volumeID", volumeID,
+						"devicePath", devicePath)
+
+					if err := s.fs.Mount(devicePath, stagingPath, fsType, flags, ""); err == nil {
+						// Mount succeeded after repair - data preserved!
+						s.logger.Info("Successfully staged volume after filesystem repair",
+							"volumeID", volumeID,
+							"devicePath", devicePath,
+							"stagingPath", stagingPath,
+							"fsType", fsType)
+
+						s.metrics.RecordNodeOperation("stage", time.Since(startTime).Seconds())
+						return &csi.NodeStageVolumeResponse{}, nil
+					}
+
+					s.logger.Error("Mount failed even after successful repair",
+						"volumeID", volumeID,
+						"devicePath", devicePath)
+				}
+
+				// Repair failed or mount still failed after repair
+				// This volume may contain data - we CANNOT reformat automatically
+				s.logger.Error("Volume is corrupted and cannot be repaired automatically",
+					"volumeID", volumeID,
+					"devicePath", devicePath,
+					"fsType", fsType,
+					"repairError", repairErr)
+
+				// Check if repair failed due to context cancellation/deadline
+				if repairErr != nil && ctx.Err() != nil {
+					s.logger.Error("Filesystem repair failed due to context error",
+						"volumeID", volumeID,
+						"devicePath", devicePath,
+						"contextError", ctx.Err(),
+						"repairError", repairErr)
+					s.metrics.RecordNodeOperationError("stage", time.Since(startTime).Seconds(), "repair_context_error")
+					return nil, status.Errorf(codes.DeadlineExceeded, "repair operation failed: %v", ctx.Err())
+				}
+
+				s.metrics.RecordNodeOperationError("stage", time.Since(startTime).Seconds(), "corruption_unrecoverable")
+
+				// Return error indicating admin intervention required
+				return nil, status.Errorf(codes.FailedPrecondition,
+					"volume %s is corrupted and cannot be mounted or repaired automatically. "+
+						"The volume may contain user data. Manual recovery required. "+
+						"Admin should attempt data recovery before reformatting. "+
+						"Device: %s, FSType: %s",
+					volumeID, devicePath, fsType)
+			}
+
+			// Volume is brand new (never formatted) - safe to format
+			s.logger.Info("Volume has never been formatted, formatting now",
+				"volumeID", volumeID,
+				"devicePath", devicePath,
+				"fsType", fsType)
+
+			// Format the device
+			if err := s.fs.FormatDevice(ctx, devicePath, fsType); err != nil {
+				return nil, status.Errorf(codes.Internal, "format device: %v", err)
+			}
+
+			// Retry mount after format
+			s.logger.Info("Retrying mount after format",
+				"volumeID", volumeID,
+				"devicePath", devicePath,
+				"stagingPath", stagingPath)
+
+			if err := s.fs.Mount(devicePath, stagingPath, fsType, flags, ""); err != nil {
+				s.metrics.RecordNodeOperationError("stage", time.Since(startTime).Seconds(), "mount_failed")
+				return nil, status.Errorf(codes.Internal, "mount device after format: %v", err)
+			}
+
+			s.logger.Info("Successfully staged volume after initial format",
+				"volumeID", volumeID,
+				"devicePath", devicePath,
+				"stagingPath", stagingPath,
+				"fsType", fsType)
+		} else {
+			// Mount succeeded on first try - device was already formatted
+			s.logger.Info("Successfully staged volume (device was already formatted)",
+				"volumeID", volumeID,
+				"devicePath", devicePath,
+				"stagingPath", stagingPath,
+				"fsType", fsType)
+
+		}
 	}
 
 	s.metrics.RecordNodeOperation("stage", time.Since(startTime).Seconds())
@@ -475,8 +585,22 @@ func (s *Service) NodeGetVolumeStats(ctx context.Context, req *csi.NodeGetVolume
 	// Get filesystem stats
 	stats, err := s.fs.GetFilesystemStats(volumePath)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "failed to get stats for %s: %v", volumePath, err)
+		// If we can't get stats, the volume might be corrupted or unmounted
+		s.logger.Warn("Failed to get volume stats - volume may be unhealthy",
+			"volumeID", req.GetVolumeId(),
+			"volumePath", volumePath,
+			"error", err)
+
+		return &csi.NodeGetVolumeStatsResponse{
+			VolumeCondition: &csi.VolumeCondition{
+				Abnormal: true,
+				Message:  fmt.Sprintf("Failed to get volume statistics: %v. Volume may be corrupted or unmounted.", err),
+			},
+		}, nil
 	}
+
+	// Check for volume health issues
+	volumeCondition := s.checkVolumeHealth(req.GetVolumeId(), volumePath, stats)
 
 	return &csi.NodeGetVolumeStatsResponse{
 		Usage: []*csi.VolumeUsage{
@@ -493,6 +617,7 @@ func (s *Service) NodeGetVolumeStats(ctx context.Context, req *csi.NodeGetVolume
 				Used:      stats.UsedInodes,
 			},
 		},
+		VolumeCondition: volumeCondition,
 	}, nil
 }
 
@@ -516,8 +641,78 @@ func (s *Service) NodeGetCapabilities(ctx context.Context, req *csi.NodeGetCapab
 					},
 				},
 			},
+			{
+				Type: &csi.NodeServiceCapability_Rpc{
+					Rpc: &csi.NodeServiceCapability_RPC{
+						Type: csi.NodeServiceCapability_RPC_VOLUME_CONDITION,
+					},
+				},
+			},
 		},
 	}, nil
+}
+
+// checkVolumeHealth checks the health of a volume and returns a VolumeCondition.
+// This is called by NodeGetVolumeStats to report volume health to Kubernetes.
+func (s *Service) checkVolumeHealth(volumeID, volumePath string, stats *filesystem.FilesystemStats) *csi.VolumeCondition {
+	// Check if volume path is a mount point
+	isMounted, err := s.fs.IsMountPoint(volumePath)
+	if err != nil {
+		s.logger.Warn("Failed to check if volume is mounted",
+			"volumeID", volumeID,
+			"volumePath", volumePath,
+			"error", err)
+		return &csi.VolumeCondition{
+			Abnormal: true,
+			Message:  fmt.Sprintf("Failed to check mount status: %v", err),
+		}
+	}
+
+	if !isMounted {
+		s.logger.Warn("Volume is not mounted",
+			"volumeID", volumeID,
+			"volumePath", volumePath)
+		return &csi.VolumeCondition{
+			Abnormal: true,
+			Message:  "Volume is not mounted",
+		}
+	}
+
+	// Check if volume is critically full (>95% usage)
+	if stats.TotalBytes > 0 {
+		usagePercent := float64(stats.UsedBytes) / float64(stats.TotalBytes) * 100
+		if usagePercent > 95 {
+			s.logger.Warn("Volume is critically full",
+				"volumeID", volumeID,
+				"volumePath", volumePath,
+				"usagePercent", usagePercent)
+			return &csi.VolumeCondition{
+				Abnormal: true,
+				Message:  fmt.Sprintf("Volume is critically full (%.1f%% used)", usagePercent),
+			}
+		}
+	}
+
+	// Check if inodes are critically low (>95% usage)
+	if stats.TotalInodes > 0 {
+		inodeUsagePercent := float64(stats.UsedInodes) / float64(stats.TotalInodes) * 100
+		if inodeUsagePercent > 95 {
+			s.logger.Warn("Volume inodes critically low",
+				"volumeID", volumeID,
+				"volumePath", volumePath,
+				"inodeUsagePercent", inodeUsagePercent)
+			return &csi.VolumeCondition{
+				Abnormal: true,
+				Message:  fmt.Sprintf("Volume inodes critically low (%.1f%% used)", inodeUsagePercent),
+			}
+		}
+	}
+
+	// Volume is healthy
+	return &csi.VolumeCondition{
+		Abnormal: false,
+		Message:  "Volume is healthy",
+	}
 }
 
 // GetNodeZoneFromKubernetes retrieves the zone label from a Kubernetes node.

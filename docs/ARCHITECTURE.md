@@ -132,7 +132,7 @@ The driver integrates with evroc's REST API (v1alpha2) to manage persistent stor
 
 **API Endpoint Structure**:
 ```
-https://api.cloud.evroc.com/apis/compute/v1alpha2/
+https://api.evroc.com/apis/compute/v1alpha2/
   organizations/{org}/
     projects/{proj}/
       disks/{name}
@@ -324,7 +324,7 @@ The driver requires minimal Kubernetes RBAC permissions:
 ## Observability
 
 ### Prometheus Metrics
-**Endpoint**: `:8080/metrics` (controller pod only)
+**Endpoint**: `:9090/metrics` (controller pod), `:9091/metrics` (node pods)
 
 **Volume Metrics**:
 - `evroc_csi_volume_operations_total` - Counter by operation and status
@@ -358,4 +358,4 @@ Structured logging using `log/slog` with levels:
 - [CSI Specification](https://github.com/container-storage-interface/spec)
 - [Kubernetes CSI Documentation](https://kubernetes-csi.github.io/docs/)
 - [CSI Driver Development Guide](https://kubernetes-csi.github.io/docs/developing.html)
-- [evroc REST API Documentation](https://api.cloud.evroc.com/docs)
+- [evroc REST API Documentation](https://api.evroc.com/docs)

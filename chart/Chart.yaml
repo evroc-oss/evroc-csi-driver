@@ -2,8 +2,8 @@ apiVersion: v2
 name: evroc-csi-driver
 description: A CSI driver for managing persistent block storage on evroc virtual machines
 type: application
-version: 0.1.6
-appVersion: "0.1.6"
+version: 0.2.0
+appVersion: "0.2.0"
 keywords:
   - storage
   - csi
@@ -18,3 +18,14 @@ maintainers:
     email: support@evroc.com
 icon: https://raw.githubusercontent.com/evroc-oss/evroc-csi-driver/main/docs/images/evroc-logo.png
 kubeVersion: ">=1.28.0-0"
+annotations:
+  artifacthub.io/license: Apache-2.0
+  artifacthub.io/links: |
+    - name: Source
+      url: https://github.com/evroc-oss/evroc-csi-driver
+    - name: Documentation
+      url: https://github.com/evroc-oss/evroc-csi-driver/blob/main/chart/README.md
+  artifacthub.io/containsSecurityUpdates: "false"
+  artifacthub.io/signKey: |
+    fingerprint: cosign-keyless
+    url: https://github.com/evroc-oss/evroc-csi-driver

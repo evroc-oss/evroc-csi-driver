@@ -15,6 +15,7 @@ type Operations interface {
 	WaitForDevice(ctx context.Context, devicePath string, timeout time.Duration) error
 	IsDeviceFormatted(ctx context.Context, devicePath string) (bool, error)
 	FormatDevice(ctx context.Context, devicePath, fsType string) error
+	RepairFilesystem(ctx context.Context, devicePath, fsType string) error
 	IsBlockDevice(path string) (bool, error)
 
 	// Mount operations

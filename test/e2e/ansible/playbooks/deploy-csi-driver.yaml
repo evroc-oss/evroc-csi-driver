@@ -101,10 +101,17 @@
           -n kube-system \
           --from-file=config.yaml={{ e2e_config_path }}
 
+    - name: Uninstall existing CSI driver release
+      # Always uninstall and reinstall to ensure we pick up the new config in the secret.
+      # TODO: We should always load new config from secret.
+      shell: |
+        export KUBECONFIG={{ kubeconfig_path }}
+        helm uninstall evroc-csi -n kube-system --ignore-not-found=true
+
     - name: Deploy CSI driver with Helm
       shell: |
         export KUBECONFIG={{ kubeconfig_path }}
-        helm upgrade --install evroc-csi {{ project_root }}/chart \
+        helm install evroc-csi {{ project_root }}/chart \
           --namespace kube-system \
           --set controller.image.repository={{ image_name }} \
           --set controller.image.tag={{ image_tag }} \

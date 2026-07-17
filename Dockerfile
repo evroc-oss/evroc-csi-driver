@@ -1,7 +1,7 @@
 # Multi-stage build for minimal image size
 
 # Stage 1: Build the driver binary
-FROM golang:1.24-alpine AS builder
+FROM golang:1.24-alpine@sha256:8bee1901f1e530bfb4a7850aa7a479d17ae3a18beb6e09064ed54cfd245b7191 AS builder
 
 # Build arguments for version information
 ARG VERSION=dev
@@ -35,7 +35,7 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
     ./cmd/evroc-csi-driver/main.go
 
 # Stage 2: Create minimal runtime image
-FROM alpine:3.19
+FROM alpine:3.23@sha256:fd791d74b68913cbb027c6546007b3f0d3bc45125f797758156952bc2d6daf40
 
 # Install runtime dependencies
 RUN apk add --no-cache \
