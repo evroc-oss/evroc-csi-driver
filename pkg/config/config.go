@@ -5,11 +5,11 @@ package config
 
 import (
 	"fmt"
-	"net/url"
 	"os"
 	"regexp"
 	"time"
 
+	sdkconfig "github.com/evroc-oss/evroc-go-sdk/config"
 	"gopkg.in/yaml.v3"
 )
 
@@ -21,7 +21,7 @@ const (
 	ConfigFileName = "config.yaml"
 
 	// DefaultRestURL is the default production REST API server URL.
-	DefaultRestURL = "https://api.cloud.evroc.com"
+	DefaultRestURL = "https://api.evroc.com"
 
 	// DefaultAuthIssuerURL is the default OIDC issuer URL for authentication.
 	DefaultAuthIssuerURL = "https://authn.iam.evroc.com/realms/evroc-customer"
@@ -71,13 +71,19 @@ const (
 
 // Config holds the CSI driver configuration loaded from YAML.
 type Config struct {
-	// evroc platform configuration.
+	// DEPRECATED: evroc platform configuration - use `api` and `context` instead
 	Evroc EvrocConfig `yaml:"evroc"`
 
-	// Authentication configuration.
-	Auth AuthConfig `yaml:"auth"`
+	// API endpoints
+	API sdkconfig.APIConfig `yaml:"api"`
 
-	// Infrastructure configuration.
+	// Project/Organization context
+	Context sdkconfig.ContextConfig `yaml:"context"`
+
+	// Authentication configuration.
+	Auth sdkconfig.AuthConfig `yaml:"auth"`
+
+	// DEPRECATED: use context instead - Infrastructure configuration.
 	Infrastructure InfrastructureConfig `yaml:"infrastructure,omitempty"`
 
 	// CSI driver configuration.
@@ -86,39 +92,21 @@ type Config struct {
 
 // EvrocConfig holds evroc platform connection parameters.
 type EvrocConfig struct {
-	// RestURL is the evroc REST API server URL.
+	// Deprecated - use api.base_url instead - RestURL is the evroc REST API server URL.
 	RestURL string `yaml:"restURL,omitempty"`
 
+	// Deprecatated - use context.organization instead
 	// Organization is the evroc organization name.
 	Organization string `yaml:"organization"`
 
+	// Deprecated - use context.project instead
 	// Project is the workspace where VMs and disks are created.
 	Project string `yaml:"project"`
-
-	// InsecureTLS skips TLS certificate verification (for development/testing only).
-	// WARNING: This is insecure and should never be used in production.
-	InsecureTLS bool `yaml:"insecureTLS,omitempty"`
-}
-
-// AuthConfig holds authentication configuration.
-type AuthConfig struct {
-	// IssuerURL is the OIDC issuer URL for authentication.
-	IssuerURL string `yaml:"issuerURL"`
-
-	// ClientID is the OAuth2 client identifier.
-	// Defaults to "evroc-cluster-client" if not specified.
-	ClientID string `yaml:"clientID,omitempty"`
-
-	// Username for authentication.
-	Username string `yaml:"username"`
-
-	// Password for authentication.
-	Password string `yaml:"password"`
 }
 
 // InfrastructureConfig holds infrastructure-related configuration.
 type InfrastructureConfig struct {
-	// Region is the cloud region.
+	// Deprecated: Use config.region instead = Region is the cloud region.
 	Region string `yaml:"region,omitempty"`
 }
 
@@ -214,18 +202,15 @@ func NewWithDefaults() *Config {
 
 // applyDefaults applies default values to optional configuration fields.
 func (c *Config) applyDefaults() {
-	// Apply evroc platform defaults.
-	if c.Evroc.RestURL == "" {
-		c.Evroc.RestURL = DefaultRestURL
+	// Apply SDK defaults (derives client_id, token_url, api base_url).
+	sdkCfg := &sdkconfig.Config{
+		Auth:    c.Auth,
+		API:     c.API,
+		Context: c.Context,
 	}
-
-	// Apply auth defaults.
-	if c.Auth.IssuerURL == "" {
-		c.Auth.IssuerURL = DefaultAuthIssuerURL
-	}
-	if c.Auth.ClientID == "" {
-		c.Auth.ClientID = DefaultAuthClientID
-	}
+	sdkCfg.SetDefaults()
+	c.Auth = sdkCfg.Auth
+	c.API = sdkCfg.API
 
 	// Apply CSI driver defaults.
 	// MaxVolumesPerNode: only apply default if not set (0).
@@ -264,47 +249,11 @@ func (c *Config) applyDefaults() {
 
 // Validate checks if the configuration is valid.
 func (c *Config) Validate() error {
-	// Validate auth configuration
-	if c.Auth.IssuerURL == "" {
-		return fmt.Errorf("auth.issuerURL is required")
-	}
-	if err := validateURL(c.Auth.IssuerURL, "auth.issuerURL"); err != nil {
+	// Validate auth and project configuration
+	conf := c.SDKConfig()
+	err := conf.Validate()
+	if err != nil {
 		return err
-	}
-
-	if c.Auth.ClientID == "" {
-		return fmt.Errorf("auth.clientID is required")
-	}
-
-	if c.Auth.Username == "" {
-		return fmt.Errorf("auth.username is required")
-	}
-	if c.Auth.Password == "" {
-		return fmt.Errorf("auth.password is required")
-	}
-
-	// Validate evroc platform configuration
-	if c.Evroc.RestURL == "" {
-		return fmt.Errorf("evroc.restURL is required")
-	}
-	if err := validateURL(c.Evroc.RestURL, "evroc.restURL"); err != nil {
-		return err
-	}
-
-	if c.Evroc.Organization == "" {
-		return fmt.Errorf("evroc.organization is required")
-	}
-	// Organization should be a valid identifier (alphanumeric, hyphens, underscores)
-	if !isValidIdentifier(c.Evroc.Organization) {
-		return fmt.Errorf("evroc.organization must contain only alphanumeric characters, hyphens, and underscores")
-	}
-
-	if c.Evroc.Project == "" {
-		return fmt.Errorf("evroc.project is required")
-	}
-	// Project should be a valid identifier (alphanumeric, hyphens, underscores)
-	if !isValidIdentifier(c.Evroc.Project) {
-		return fmt.Errorf("evroc.project must contain only alphanumeric characters, hyphens, and underscores")
 	}
 
 	// Validate optional CSI identifier if provided
@@ -312,21 +261,6 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("csi.identifier must contain only alphanumeric characters, hyphens, and underscores")
 	}
 
-	return nil
-}
-
-// validateURL validates that a string is a valid HTTP or HTTPS URL.
-func validateURL(urlStr, fieldName string) error {
-	parsed, err := url.Parse(urlStr)
-	if err != nil {
-		return fmt.Errorf("%s must be a valid URL: %w", fieldName, err)
-	}
-	if parsed.Scheme != "http" && parsed.Scheme != "https" {
-		return fmt.Errorf("%s must be an HTTP or HTTPS URL", fieldName)
-	}
-	if parsed.Host == "" {
-		return fmt.Errorf("%s must include a host", fieldName)
-	}
 	return nil
 }
 
@@ -341,12 +275,77 @@ func isValidIdentifier(id string) bool {
 
 // String returns a string representation of the config (with sensitive data redacted).
 func (c *Config) String() string {
-	return fmt.Sprintf(
-		"Config{Auth: {IssuerURL: %s, ClientID: %s, Username: %s, Password: <redacted>}, "+
-			"Evroc: {RestURL: %s, Organization: %s, Project: %s}, "+
-			"Infrastructure: {Region: %s}, CSI: {Identifier: %s}}",
-		c.Auth.IssuerURL, c.Auth.ClientID, c.Auth.Username,
-		c.Evroc.RestURL, c.Evroc.Organization, c.Evroc.Project,
-		c.Infrastructure.Region, c.CSI.Identifier,
+	return fmt.Sprintf(`Config{
+	Auth: {
+		TokenURL: %s,
+		ClientID: %s,
+		Username: %s,
+		Password: <redacted - %d chars>,
+		Token: <redacted- %d chars>,
+		RefreshToken: <redacted- %d chars>,
+		Scopes: %v,
+		ServiceAccountId %s, 
+		ServiceAccountSecret: <redacted - %d chars>
+	},
+	Evroc: {
+		RestURL: %s,
+		Organization: %s,
+		Project: %s
+	},
+	Infrastructure: {
+		Region: %s
+	},
+	API: {
+		BaseURL: %s,
+	},
+	Context: {
+		Organization: %s,
+		Project: %s,
+		Region: %s,
+	},
+	CSI: {
+		Identifier: %s
+	}
+}`,
+		c.Auth.TokenURL,
+		c.Auth.ClientID,
+		c.Auth.Username,      // nolint:staticcheck
+		len(c.Auth.Password), // nolint:staticcheck
+		len(c.Auth.Token),
+		len(c.Auth.RefreshToken),
+		c.Auth.Scopes,
+		c.Auth.ServiceAccountID,
+		len(c.Auth.ServiceAccountSecret),
+		c.Evroc.RestURL,
+		c.Evroc.Organization,
+		c.Evroc.Project,
+		c.Infrastructure.Region,
+		c.API.BaseURL,
+		c.Context.Organization,
+		c.Context.Project,
+		c.Context.Region,
+		c.CSI.Identifier,
 	)
+}
+
+func (c *Config) SDKConfig() sdkconfig.Config {
+	sdkConfig := sdkconfig.Config{
+		Auth:    c.Auth,
+		API:     c.API,
+		Context: c.Context,
+	}
+	if c.API.BaseURL == "" {
+		sdkConfig.API.BaseURL = c.Evroc.RestURL
+	}
+	if c.Context.Organization == "" {
+		sdkConfig.Context.Organization = c.Evroc.Organization
+	}
+	if c.Context.Project == "" {
+		sdkConfig.Context.Project = c.Evroc.Project
+	}
+	if c.Context.Region == "" {
+		sdkConfig.Context.Region = c.Infrastructure.Region
+	}
+	sdkConfig.SetDefaults()
+	return sdkConfig
 }

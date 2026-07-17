@@ -1,0 +1,6 @@
+# Artifact Hub repository metadata
+# https://artifacthub.io/docs/topics/repositories/
+repositoryID: evroc-csi-driver
+owners:
+  - name: evroc
+    email: support@evroc.com

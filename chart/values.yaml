@@ -23,7 +23,7 @@ controller:
 
   image:
     repository: ghcr.io/evroc-oss/evroc-csi-driver
-    tag: v0.1.6
+    tag: v0.2.0@sha256:c03bc718b5bfdbad568e32b906367696bcc8a33c1eb705af614497b27a7cae29
     pullPolicy: IfNotPresent
 
   # Resource limits and requests
@@ -58,7 +58,7 @@ controller:
 node:
   image:
     repository: ghcr.io/evroc-oss/evroc-csi-driver
-    tag: v0.1.6
+    tag: v0.2.0@sha256:c03bc718b5bfdbad568e32b906367696bcc8a33c1eb705af614497b27a7cae29
     pullPolicy: IfNotPresent
 
   # Resource limits and requests for node daemonset
@@ -165,7 +165,7 @@ sidecars:
   provisioner:
     image:
       repository: registry.k8s.io/sig-storage/csi-provisioner
-      tag: v5.1.0
+      tag: v5.3.0@sha256:bb057f866177d5f4139a1527e594499cbe0feeb67b63aaca8679dfdf0a6016f9
       pullPolicy: IfNotPresent
     resources:
       limits:
@@ -183,7 +183,7 @@ sidecars:
   attacher:
     image:
       repository: registry.k8s.io/sig-storage/csi-attacher
-      tag: v4.7.0
+      tag: v4.11.0@sha256:b74b05b39501565022883fc128002b4cb857a7bb6c858606bcb3fdedba0b0b80
       pullPolicy: IfNotPresent
     resources:
       limits:
@@ -199,7 +199,7 @@ sidecars:
   registrar:
     image:
       repository: registry.k8s.io/sig-storage/csi-node-driver-registrar
-      tag: v2.12.0
+      tag: v2.16.0@sha256:ab482308a4921e28a6df09a16ab99a457e9af9641ff44fb1be1a690d07ce8b70
       pullPolicy: IfNotPresent
     resources:
       limits:

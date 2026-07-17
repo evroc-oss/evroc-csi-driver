@@ -8,7 +8,8 @@ import (
 	"log/slog"
 	"sync"
 
-	"github.com/evroc-oss/evroc-csi-driver/pkg/evroc/types"
+	"github.com/evroc-oss/evroc-go-sdk/compute"
+	computetypes "github.com/evroc-oss/evroc-go-sdk/types/compute"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -17,8 +18,8 @@ import (
 type MockStorageBackend struct {
 	logger      *slog.Logger
 	deviceMgr   *MockDeviceManager
-	disks       map[string]*types.Disk
-	attachments map[string]*types.HotswapDiskAttachment
+	disks       map[string]*computetypes.Disk
+	attachments map[string]*computetypes.HotswapDiskAttachment
 	nodes       map[string]bool // Track valid nodes for testing
 	mu          sync.Mutex
 }
@@ -30,8 +31,8 @@ func NewMockStorageBackend(logger *slog.Logger, deviceMgr *MockDeviceManager) *M
 	return &MockStorageBackend{
 		logger:      logger,
 		deviceMgr:   deviceMgr,
-		disks:       make(map[string]*types.Disk),
-		attachments: make(map[string]*types.HotswapDiskAttachment),
+		disks:       make(map[string]*computetypes.Disk),
+		attachments: make(map[string]*computetypes.HotswapDiskAttachment),
 		nodes:       nodes,
 	}
 }
@@ -42,26 +43,26 @@ func (m *MockStorageBackend) EnsureDiskCreated(ctx context.Context, name string,
 	defer m.mu.Unlock()
 
 	if existing, exists := m.disks[name]; exists {
-		// Check if capacity matches (convert MB to match the requested sizeMB)
-		existingMB := existing.Spec.DiskSize.Amount
-		if existingMB != sizeMB {
-			return false, status.Errorf(codes.AlreadyExists,
-				"volume %s already exists with different capacity (existing: %d MB, requested: %d MB)",
-				name, existingMB, sizeMB)
+		if existing.Spec.DiskSize != nil {
+			existingMB := existing.Spec.DiskSize.Amount
+			if existingMB != sizeMB {
+				return false, status.Errorf(codes.AlreadyExists,
+					"volume %s already exists with different capacity (existing: %d MB, requested: %d MB)",
+					name, existingMB, sizeMB)
+			}
 		}
 		m.logger.Info("Mock disk already exists", "name", name, "sizeMB", sizeMB)
 		return false, nil
 	}
 
-	// Create minimal mock disk object
-	disk := &types.Disk{
-		Metadata: types.EvrocMetadata{
-			ID: name,
+	disk := &computetypes.Disk{
+		Metadata: computetypes.RegionalMetadataResponse{
+			Id: name,
 		},
-		Spec: types.DiskSpec{
-			DiskSize: types.DiskSize{
-				Unit:   types.UnitMB,
+		Spec: computetypes.DiskSpec{
+			DiskSize: &computetypes.DiskSpecDiskSize{
 				Amount: sizeMB,
+				Unit:   computetypes.DiskSpecDiskSizeUnitMB,
 			},
 		},
 	}
@@ -87,7 +88,7 @@ func (m *MockStorageBackend) EnsureDiskDeleted(ctx context.Context, name string)
 }
 
 // GetDisk retrieves a specific disk from the mock storage
-func (m *MockStorageBackend) GetDisk(ctx context.Context, name string) (*types.Disk, error) {
+func (m *MockStorageBackend) GetDisk(ctx context.Context, name string) (*computetypes.Disk, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -99,22 +100,22 @@ func (m *MockStorageBackend) GetDisk(ctx context.Context, name string) (*types.D
 	return disk, nil
 }
 
-func (m *MockStorageBackend) ListDisks(ctx context.Context) (*types.DiskList, error) {
+func (m *MockStorageBackend) ListDisks(ctx context.Context) (*compute.DiskList, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	items := make([]types.Disk, 0, len(m.disks))
+	items := make([]computetypes.Disk, 0, len(m.disks))
 	for _, disk := range m.disks {
 		items = append(items, *disk)
 	}
 
-	return &types.DiskList{
+	return &compute.DiskList{
 		Items: items,
 	}, nil
 }
 
 // GetAttachment retrieves a specific attachment
-func (m *MockStorageBackend) GetAttachment(ctx context.Context, diskName, vmName string) (*types.HotswapDiskAttachment, error) {
+func (m *MockStorageBackend) GetAttachment(ctx context.Context, diskName, vmName string) (*computetypes.HotswapDiskAttachment, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -128,16 +129,16 @@ func (m *MockStorageBackend) GetAttachment(ctx context.Context, diskName, vmName
 }
 
 // ListAttachments returns all attachments in the mock storage
-func (m *MockStorageBackend) ListAttachments(ctx context.Context) (*types.HotswapDiskAttachmentList, error) {
+func (m *MockStorageBackend) ListAttachments(ctx context.Context) (*compute.HotswapDiskAttachmentList, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	items := make([]types.HotswapDiskAttachment, 0, len(m.attachments))
+	items := make([]computetypes.HotswapDiskAttachment, 0, len(m.attachments))
 	for _, attachment := range m.attachments {
 		items = append(items, *attachment)
 	}
 
-	return &types.HotswapDiskAttachmentList{
+	return &compute.HotswapDiskAttachmentList{
 		Items: items,
 	}, nil
 }
@@ -149,7 +150,7 @@ func (m *MockStorageBackend) CountNodeAttachments(ctx context.Context, vmName st
 
 	count := 0
 	for _, attachment := range m.attachments {
-		if attachment.Spec.VMRef == vmName {
+		if attachment.Spec.VirtualMachineRef == vmName {
 			count++
 		}
 	}
@@ -185,21 +186,22 @@ func (m *MockStorageBackend) EnsureAttachmentCreated(ctx context.Context, diskNa
 	hash := sha256.Sum256([]byte(diskName))
 	serial := hex.EncodeToString(hash[:])[:20]
 
-	// Create minimal mock attachment object
-	attachment := &types.HotswapDiskAttachment{
-		Metadata: types.EvrocMetadata{
-			ID: attachmentKey,
+	attachment := &computetypes.HotswapDiskAttachment{
+		Metadata: computetypes.RegionalMetadataResponse{
+			Id: attachmentKey,
 		},
-		Spec: types.HotswapDiskAttachmentSpec{
-			DiskRef: diskName,
-			VMRef:   vmName,
+		Spec: computetypes.HotswapDiskAttachmentSpec{
+			DiskRef:           diskName,
+			VirtualMachineRef: vmName,
+		},
+		Status: computetypes.HotswapDiskAttachmentStatus{
+			Serial: &serial,
 		},
 	}
 
 	m.attachments[attachmentKey] = attachment
 
 	// Create the mock device file for the volume
-	// Use the disk name as volume ID (CSI uses disk name as volume ID)
 	if _, err := m.deviceMgr.CreateMockDevice(diskName); err != nil {
 		m.logger.Error("Failed to create mock device", "disk", diskName, "error", err)
 		return status.Errorf(codes.Internal, "failed to create mock device: %v", err)
@@ -216,17 +218,17 @@ func (m *MockStorageBackend) WaitForAttachmentSerial(ctx context.Context, diskNa
 
 	attachmentKey := fmt.Sprintf("%s-%s", diskName, vmName)
 
-	_, exists := m.attachments[attachmentKey]
+	att, exists := m.attachments[attachmentKey]
 	if !exists {
 		return "", status.Errorf(codes.NotFound, "attachment %s not found", attachmentKey)
 	}
 
-	// Generate serial number same way as EnsureAttachmentCreated
-	hash := sha256.Sum256([]byte(diskName))
-	serial := hex.EncodeToString(hash[:])[:20]
+	if att.Status.Serial == nil {
+		return "", status.Errorf(codes.Unavailable, "serial not available for %s", attachmentKey)
+	}
 
-	m.logger.Info("Mock serial retrieved immediately", "disk", diskName, "vm", vmName, "serial", serial)
-	return serial, nil
+	m.logger.Info("Mock serial retrieved immediately", "disk", diskName, "vm", vmName, "serial", *att.Status.Serial)
+	return *att.Status.Serial, nil
 }
 
 // EnsureAttachmentDeleted removes an attachment and deletes the mock device
@@ -246,7 +248,6 @@ func (m *MockStorageBackend) EnsureAttachmentDeleted(ctx context.Context, diskNa
 	// Delete the mock device file
 	if err := m.deviceMgr.DeleteMockDevice(diskName); err != nil {
 		m.logger.Warn("Failed to delete mock device", "disk", diskName, "error", err)
-		// Don't fail the detachment if device cleanup fails
 	}
 
 	m.logger.Info("Deleted mock attachment and device", "disk", diskName, "vm", vmName)

@@ -1,0 +1,466 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 evroc
+
+package sdk
+
+import (
+	"context"
+	"crypto/sha256"
+	"errors"
+	"fmt"
+	"log/slog"
+	"net/url"
+	"strings"
+	"time"
+
+	evroc "github.com/evroc-oss/evroc-go-sdk"
+	"github.com/evroc-oss/evroc-go-sdk/compute"
+	computetypes "github.com/evroc-oss/evroc-go-sdk/types/compute"
+
+	"github.com/evroc-oss/evroc-csi-driver/pkg/config"
+	evrocpkg "github.com/evroc-oss/evroc-csi-driver/pkg/evroc"
+	"github.com/evroc-oss/evroc-csi-driver/pkg/metrics"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+)
+
+const (
+	managedByLabel = "managed-by"
+)
+
+var _ evrocpkg.StorageBackend = (*SDKStorageBackend)(nil)
+
+// labelFilter implements the SDK's rest.ListFilter interface via Go structural typing.
+type labelFilter struct {
+	labels map[string]string
+}
+
+func (f labelFilter) Apply(v url.Values) {
+	if len(f.labels) == 0 {
+		return
+	}
+	var parts []string
+	for k, val := range f.labels {
+		parts = append(parts, fmt.Sprintf("%s=%s", k, val))
+	}
+	v.Set("labelSelector", strings.Join(parts, ","))
+}
+
+// SDKStorageBackend implements evroc.StorageBackend using the evroc-go-sdk.
+type SDKStorageBackend struct {
+	client                *evroc.Client
+	identifier            string
+	logger                *slog.Logger
+	metrics               *metrics.Manager
+	attachmentPollTimeout time.Duration
+}
+
+// NewSDKStorageBackend creates a StorageBackend backed by the evroc-go-sdk.
+func NewSDKStorageBackend(ctx context.Context, cfg *config.Config, logger *slog.Logger, metricsManager *metrics.Manager) (*SDKStorageBackend, error) {
+	client, err := evroc.New(ctx, cfg.SDKConfig())
+	if err != nil {
+		return nil, fmt.Errorf("create evroc SDK client: %w", err)
+	}
+
+	identifier := cfg.CSI.Identifier
+	if identifier == "" {
+		identifier = cfg.Evroc.Project
+	}
+
+	logger.Info("SDK storage backend initialized")
+
+	return &SDKStorageBackend{
+		client:                client,
+		identifier:            identifier,
+		logger:                logger,
+		metrics:               metricsManager,
+		attachmentPollTimeout: cfg.CSI.AttachmentPollTimeout,
+	}, nil
+}
+
+func (s *SDKStorageBackend) managedByLabels() map[string]string {
+	return map[string]string{managedByLabel: s.identifier}
+}
+
+func (s *SDKStorageBackend) managedByFilter() labelFilter {
+	return labelFilter{labels: s.managedByLabels()}
+}
+
+func (s *SDKStorageBackend) EnsureDiskCreated(ctx context.Context, name string, sizeMB int32, storageClass, zone string) (bool, error) {
+	startTime := time.Now()
+
+	s.logger.Info("Ensuring disk exists", "name", name, "sizeMB", sizeMB, "storageClass", storageClass, "zone", zone)
+
+	existing, err := s.client.Compute().Disks().Get(ctx, name)
+	if err == nil {
+		s.logger.Info("Disk already exists (from GET), validating parameters", "name", name)
+		if err := s.validateExistingDisk(existing, name, sizeMB, startTime); err != nil {
+			return false, err
+		}
+		s.recordAPISuccess("CreateDisk", startTime)
+		return false, nil
+	}
+
+	if !isNotFoundOrForbidden(err) {
+		s.logger.Info("GET check failed, will try POST", "error", err.Error())
+	}
+
+	diskReq := compute.NewDiskBuilder(name).
+		WithSize(sizeMB, compute.DiskSizeUnit("MB")).
+		WithZone(zone).
+		WithLabels(s.managedByLabels()).
+		Build()
+
+	_, err = s.client.Compute().Disks().Create(ctx, diskReq)
+	if err != nil {
+		if errors.Is(err, evroc.ErrConflict) {
+			s.logger.Info("Disk already exists (from POST conflict), will validate", "name", name)
+			conflictDisk, getErr := s.client.Compute().Disks().Get(ctx, name)
+			if getErr != nil {
+				s.recordAPIError("CreateDisk", startTime, getErr)
+				return false, sdkErrorToGRPC(getErr)
+			}
+			if err := s.validateExistingDisk(conflictDisk, name, sizeMB, startTime); err != nil {
+				return false, err
+			}
+			s.recordAPISuccess("CreateDisk", startTime)
+			return false, nil
+		}
+		s.recordAPIError("CreateDisk", startTime, err)
+		return false, sdkErrorToGRPC(err)
+	}
+
+	s.recordAPISuccess("CreateDisk", startTime)
+	s.logger.Info("Disk created successfully", "name", name)
+	return true, nil
+}
+
+func (s *SDKStorageBackend) EnsureDiskDeleted(ctx context.Context, name string) error {
+	startTime := time.Now()
+
+	s.logger.Info("Ensuring disk is deleted", "name", name)
+
+	existing, err := s.client.Compute().Disks().Get(ctx, name)
+	if isNotFoundOrForbidden(err) {
+		s.logger.Info("Disk already deleted", "name", name)
+		s.recordAPISuccess("DeleteDisk", startTime)
+		return nil
+	}
+	if err != nil {
+		s.recordAPIError("DeleteDisk", startTime, err)
+		return sdkErrorToGRPC(err)
+	}
+
+	if err := s.validateOwnership(sdkUserLabels(existing.Metadata.UserLabels), "disk", name, "delete", "DeleteDisk", startTime); err != nil {
+		return err
+	}
+
+	err = s.client.Compute().Disks().Delete(ctx, name)
+	if err == nil || isNotFoundOrForbidden(err) {
+		s.logger.Info("Disk deleted successfully", "name", name)
+		s.recordAPISuccess("DeleteDisk", startTime)
+		return nil
+	}
+
+	s.recordAPIError("DeleteDisk", startTime, err)
+	return sdkErrorToGRPC(err)
+}
+
+func (s *SDKStorageBackend) GetDisk(ctx context.Context, name string) (*computetypes.Disk, error) {
+	startTime := time.Now()
+
+	s.logger.Info("Getting disk", "name", name)
+
+	disk, err := s.client.Compute().Disks().Get(ctx, name)
+	if err != nil {
+		if isNotFoundOrForbidden(err) {
+			s.logger.Info("Disk not found", "name", name)
+		}
+		s.recordAPIError("GetDisk", startTime, err)
+		return nil, sdkErrorToGRPC(err)
+	}
+
+	if err := s.validateOwnership(sdkUserLabels(disk.Metadata.UserLabels), "disk", name, "get", "GetDisk", startTime); err != nil {
+		return nil, err
+	}
+
+	s.logger.Info("Disk retrieved successfully", "name", name)
+	s.recordAPISuccess("GetDisk", startTime)
+	return disk, nil
+}
+
+func (s *SDKStorageBackend) ListDisks(ctx context.Context) (*compute.DiskList, error) {
+	startTime := time.Now()
+
+	s.logger.Info("Listing disks with label selector", "labelSelector", fmt.Sprintf("%s=%s", managedByLabel, s.identifier))
+
+	result, err := s.client.Compute().Disks().List(ctx, s.managedByFilter())
+	if err != nil {
+		s.recordAPIError("ListDisks", startTime, err)
+		return nil, sdkErrorToGRPC(err)
+	}
+
+	s.logger.Info("Disks listed successfully", "count", len(result.Items))
+	s.recordAPISuccess("ListDisks", startTime)
+	return result, nil
+}
+
+func (s *SDKStorageBackend) GetAttachment(ctx context.Context, diskName, vmName string) (*computetypes.HotswapDiskAttachment, error) {
+	startTime := time.Now()
+	attName := attachmentName(diskName, vmName)
+
+	s.logger.Info("Getting attachment", "diskName", diskName, "vmName", vmName, "attachmentName", attName)
+
+	att, err := s.client.Compute().HotswapDiskAttachments().Get(ctx, attName)
+	if err != nil {
+		if isNotFoundOrForbidden(err) {
+			s.logger.Info("Attachment not found", "name", attName)
+		}
+		s.recordAPIError("GetAttachment", startTime, err)
+		return nil, sdkErrorToGRPC(err)
+	}
+
+	if err := s.validateOwnership(sdkUserLabels(att.Metadata.UserLabels), "attachment", attName, "get", "GetAttachment", startTime); err != nil {
+		return nil, err
+	}
+
+	s.logger.Info("Attachment retrieved successfully", "name", attName, "serial", att.Status.Serial)
+	s.recordAPISuccess("GetAttachment", startTime)
+	return att, nil
+}
+
+func (s *SDKStorageBackend) ListAttachments(ctx context.Context) (*compute.HotswapDiskAttachmentList, error) {
+	startTime := time.Now()
+
+	s.logger.Info("Listing disk attachments with label selector", "labelSelector", fmt.Sprintf("%s=%s", managedByLabel, s.identifier))
+
+	result, err := s.client.Compute().HotswapDiskAttachments().List(ctx, s.managedByFilter())
+	if err != nil {
+		s.recordAPIError("ListAttachments", startTime, err)
+		return nil, sdkErrorToGRPC(err)
+	}
+
+	s.logger.Info("Attachments listed successfully", "count", len(result.Items))
+	s.recordAPISuccess("ListAttachments", startTime)
+	return result, nil
+}
+
+func (s *SDKStorageBackend) CountNodeAttachments(ctx context.Context, vmName string) (int, error) {
+	s.logger.Info("Counting attachments for VM", "vmName", vmName)
+
+	attachmentList, err := s.ListAttachments(ctx)
+	if err != nil {
+		return 0, err
+	}
+
+	count := 0
+	for _, attachment := range attachmentList.Items {
+		attachedVM := evrocpkg.ExtractResourceName(attachment.Spec.VirtualMachineRef)
+		if attachedVM == vmName {
+			count++
+		}
+	}
+
+	s.logger.Info("Counted attachments for VM", "vmName", vmName, "count", count)
+	return count, nil
+}
+
+func (s *SDKStorageBackend) EnsureAttachmentCreated(ctx context.Context, diskName, vmName string) error {
+	startTime := time.Now()
+	attName := attachmentName(diskName, vmName)
+
+	s.logger.Info("Ensuring attachment exists", "diskName", diskName, "vmName", vmName, "attachmentName", attName)
+
+	diskRef := s.client.Compute().DiskRef(diskName)
+	vmRef := s.client.Compute().VMRef(vmName)
+
+	attReq := compute.NewHotswapDiskAttachmentBuilder(attName, vmRef, diskRef).
+		WithLabels(s.managedByLabels()).
+		Build()
+
+	_, err := s.client.Compute().HotswapDiskAttachments().Create(ctx, attReq)
+	if err != nil {
+		if errors.Is(err, evroc.ErrConflict) {
+			s.logger.Info("Attachment already exists", "name", attName)
+			s.recordAPISuccess("CreateAttachment", startTime)
+			return nil
+		}
+		s.recordAPIError("CreateAttachment", startTime, err)
+		return sdkErrorToGRPC(err)
+	}
+
+	s.logger.Info("Attachment created successfully", "name", attName)
+	s.recordAPISuccess("CreateAttachment", startTime)
+	return nil
+}
+
+func (s *SDKStorageBackend) WaitForAttachmentSerial(ctx context.Context, diskName, vmName string) (string, error) {
+	attName := attachmentName(diskName, vmName)
+
+	s.logger.Info("Waiting for serial", "diskName", diskName, "vmName", vmName, "attachmentName", attName)
+
+	readyAtt, err := s.client.Compute().HotswapDiskAttachments().WaitForReady(ctx, attName, s.attachmentPollTimeout)
+	if err != nil {
+		s.logger.Error("Timeout or error waiting for attachment ready", "diskName", diskName, "vmName", vmName, "error", err)
+		return "", status.Errorf(codes.Unavailable, "attachment not ready after waiting %v: %v", s.attachmentPollTimeout, err)
+	}
+
+	if readyAtt.Status.Serial == nil || *readyAtt.Status.Serial == "" {
+		return "", status.Errorf(codes.Unavailable, "attachment ready but serial is empty for %s", attName)
+	}
+
+	s.logger.Info("Serial retrieved", "diskName", diskName, "vmName", vmName, "serial", *readyAtt.Status.Serial)
+	return *readyAtt.Status.Serial, nil
+}
+
+func (s *SDKStorageBackend) EnsureAttachmentDeleted(ctx context.Context, diskName, vmName string) error {
+	startTime := time.Now()
+	attName := attachmentName(diskName, vmName)
+
+	s.logger.Info("Ensuring attachment is deleted", "diskName", diskName, "vmName", vmName, "attachmentName", attName)
+
+	existing, err := s.client.Compute().HotswapDiskAttachments().Get(ctx, attName)
+	if isNotFoundOrForbidden(err) {
+		s.logger.Info("Attachment already deleted", "name", attName)
+		s.recordAPISuccess("DeleteAttachment", startTime)
+		return nil
+	}
+	if err != nil {
+		s.recordAPIError("DeleteAttachment", startTime, err)
+		return sdkErrorToGRPC(err)
+	}
+
+	if err := s.validateOwnership(sdkUserLabels(existing.Metadata.UserLabels), "attachment", attName, "delete", "DeleteAttachment", startTime); err != nil {
+		return err
+	}
+
+	err = s.client.Compute().HotswapDiskAttachments().Delete(ctx, attName)
+	if err == nil || isNotFoundOrForbidden(err) {
+		s.logger.Info("Attachment deleted successfully", "name", attName)
+		s.recordAPISuccess("DeleteAttachment", startTime)
+		return nil
+	}
+
+	s.recordAPIError("DeleteAttachment", startTime, err)
+	return sdkErrorToGRPC(err)
+}
+
+// --- Helpers ---
+
+func attachmentName(diskName, vmName string) string {
+	fullName := fmt.Sprintf("%s-to-%s", diskName, vmName)
+	if len(fullName) > 63 {
+		hash := sha256.Sum256([]byte(fullName))
+		return fmt.Sprintf("hsda-%x", hash)[:61]
+	}
+	return fullName
+}
+
+func isNotFoundOrForbidden(err error) bool {
+	return errors.Is(err, evroc.ErrNotFound) || errors.Is(err, evroc.ErrForbidden)
+}
+
+func sdkUserLabels(ul *computetypes.UserLabels) map[string]string {
+	if ul == nil {
+		return make(map[string]string)
+	}
+	return map[string]string(*ul)
+}
+
+func (s *SDKStorageBackend) validateExistingDisk(disk *computetypes.Disk, name string, sizeMB int32, startTime time.Time) error {
+	labels := sdkUserLabels(disk.Metadata.UserLabels)
+	if managedBy := labels[managedByLabel]; managedBy != s.identifier {
+		s.recordAPIErrorWithType("CreateDisk", startTime, "already_exists")
+		return status.Errorf(codes.AlreadyExists, "disk %s already exists but was created by %s, not by this CSI driver (%s)",
+			name, managedBy, s.identifier)
+	}
+
+	if disk.Spec.DiskSize != nil {
+		if disk.Spec.DiskSize.Amount != sizeMB || string(disk.Spec.DiskSize.Unit) != "MB" {
+			s.recordAPIErrorWithType("CreateDisk", startTime, "already_exists")
+			return status.Errorf(codes.AlreadyExists, "disk %s already exists but with different size: %d%s vs %dMB",
+				name, disk.Spec.DiskSize.Amount, disk.Spec.DiskSize.Unit, sizeMB)
+		}
+	}
+
+	return nil
+}
+
+func (s *SDKStorageBackend) validateOwnership(labels map[string]string, resourceType, resourceName, operation, metricsMethod string, startTime time.Time) error {
+	managedBy := labels[managedByLabel]
+	if managedBy == s.identifier {
+		return nil
+	}
+
+	s.recordAPIErrorWithType(metricsMethod, startTime, "forbidden")
+
+	if operation == "delete" {
+		s.logger.Warn(fmt.Sprintf("Refusing to delete %s managed by different driver", resourceType),
+			"name", resourceName,
+			"managedBy", managedBy,
+			"ourIdentifier", s.identifier)
+		return status.Errorf(codes.PermissionDenied, "refusing to delete %s %s created by %s (not created by this CSI driver: %s)",
+			resourceType, resourceName, managedBy, s.identifier)
+	}
+
+	capitalizedType := resourceType
+	if len(resourceType) > 0 {
+		capitalizedType = strings.ToUpper(resourceType[:1]) + resourceType[1:]
+	}
+
+	s.logger.Info(fmt.Sprintf("%s exists but not managed by this driver", capitalizedType),
+		"name", resourceName,
+		"managedBy", managedBy)
+	return status.Errorf(codes.NotFound, "%s %s exists but not managed by this CSI driver (managed by: %s)",
+		resourceType, resourceName, managedBy)
+}
+
+// --- Metrics ---
+
+func (s *SDKStorageBackend) recordAPISuccess(method string, startTime time.Time) {
+	s.metrics.RecordAPICall(method, time.Since(startTime).Seconds())
+}
+
+func (s *SDKStorageBackend) recordAPIError(method string, startTime time.Time, err error) {
+	s.metrics.RecordAPICallError(method, time.Since(startTime).Seconds(), classifySDKError(err))
+}
+
+func (s *SDKStorageBackend) recordAPIErrorWithType(method string, startTime time.Time, errorType string) {
+	s.metrics.RecordAPICallError(method, time.Since(startTime).Seconds(), errorType)
+}
+
+func classifySDKError(err error) string {
+	if err == nil {
+		return ""
+	}
+	if isNotFoundOrForbidden(err) {
+		return "not_found"
+	}
+	if errors.Is(err, evroc.ErrConflict) {
+		return "already_exists"
+	}
+	if errors.Is(err, evroc.ErrBadRequest) {
+		return "bad_request"
+	}
+	errStr := err.Error()
+	if strings.Contains(errStr, "timeout") || strings.Contains(errStr, "Timeout") {
+		return "timeout"
+	}
+	return "internal"
+}
+
+func sdkErrorToGRPC(err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, evroc.ErrNotFound) || errors.Is(err, evroc.ErrForbidden) {
+		return status.Errorf(codes.NotFound, "%v", err)
+	}
+	if errors.Is(err, evroc.ErrConflict) {
+		return status.Errorf(codes.AlreadyExists, "%v", err)
+	}
+	if errors.Is(err, evroc.ErrBadRequest) {
+		return status.Errorf(codes.InvalidArgument, "%v", err)
+	}
+	return status.Errorf(codes.Internal, "%v", err)
+}

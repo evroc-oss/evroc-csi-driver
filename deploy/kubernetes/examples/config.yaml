@@ -4,27 +4,55 @@
 # Minimal configuration - only specify what you need to change:
 #   - organization (required)
 #   - project (required)
-#   - username (required)
-#   - password (required)
 #   - region (required)
-
-# evroc platform configuration
-evroc:
-  organization: <orgId>     # CHANGE: Your organization identifier
-  project: <projectId>      # CHANGE: Your project identifier
+# then an auth method
 
 # Authentication configuration
 auth:
-  username: csi-driver-account-org-aaabbbcccddd@evroc.com  # CHANGE: Your service account username
-  password: your-password-here                              # CHANGE: Your service account password
 
-# Infrastructure configuration
-infrastructure:
-  region: se-sto  # CHANGE: Your region (e.g., se-sto)
+  # There are three supported auth methods:
+  # To use one, comment out the other sections and comment in the relevant section.
+
+  # 1) Raw username and password (legacy and discouraged)
+  # 2) Token + refresh token
+  # 3) ServiceAccount (recommended)
+
+  # 1) Raw username and password:
+  # This is now deprecated and requires evroc setting up a robot account - this will
+  # be removed in a later release.
+  # username: csi-driver-account-org-aaabbbcccddd@evroc.com  # CHANGE: Your service account username
+  # password: your-password-here                              # CHANGE: Your service account password
+
+  # 2) Token and refresh token:
+  # token: <in the CLI run `evroc iam get-access-token`> 
+  # refresh_token: <while logged into the CLI, read this from your ~/.evroc/config.yaml file>
+
+  # 3) Service Account (recommended)
+  # Create a service account:        evroc iam serviceaccount create csi-driver
+  # Create a credential:             evroc iam serviceaccount credential create csi-driver-key --service-account csi-driver
+  # Assign role:
+  #   evroc iam rolebinding assign --principal "/iam/projects/<project-id>/serviceAccounts/csi-driver" --role /iam/roles/kubernetesCSIAgent
+  service_account_id: "csi-driver"
+  service_account_secret: "your-jwk-private-key-from-credential-create"
+
+  # Advanced:
+  # token_url: defaults to https://authn.iam.evroc.com/realms/evroc-customer
+  # scopes: optional list of OAuth2 scopes
+  # client_id: this is computed for your service_account_id and service_account_secret JWT
+
+context:
+  organization: <orgId>           # CHANGE: Your organization identifier
+  project: <projectId>            # CHANGE: Your project identifier
+  region: "se-sto"
 
 # ============================================================================
 # Advanced configuration (optional) - uncomment only if needed
 # ============================================================================
+
+# This is used when not in public cloud
+# api:
+#  base_url: "https://api.cloud.evroc.com"
+
 
 # csi:
 #   identifier: my-cluster-csi  # Multi-cluster identifier (only needed when multiple clusters share the same project)

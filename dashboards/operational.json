@@ -1,0 +1,156 @@
+{
+  "title": "evroc CSI Driver - Operational",
+  "uid": "evroc-csi-operational",
+  "timezone": "browser",
+  "refresh": "10s",
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "panels": [
+    {
+      "title": "Volume Operations Success Rate",
+      "type": "stat",
+      "gridPos": {"x": 0, "y": 0, "w": 8, "h": 4},
+      "targets": [
+        {
+          "expr": "sum(rate(evroc_csi_volume_operations_total{status=\"success\"}[5m])) / sum(rate(evroc_csi_volume_operations_total[5m])) * 100",
+          "legendFormat": "Success Rate %"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"value": 0, "color": "red"},
+              {"value": 95, "color": "yellow"},
+              {"value": 99, "color": "green"}
+            ]
+          }
+        }
+      }
+    },
+    {
+      "title": "Active Volumes",
+      "type": "stat",
+      "gridPos": {"x": 8, "y": 0, "w": 8, "h": 4},
+      "targets": [
+        {
+          "expr": "sum(evroc_csi_volumes_total)",
+          "legendFormat": "Total Volumes"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        }
+      }
+    },
+    {
+      "title": "Error Rate (last 5min)",
+      "type": "stat",
+      "gridPos": {"x": 16, "y": 0, "w": 8, "h": 4},
+      "targets": [
+        {
+          "expr": "sum(rate(evroc_csi_volume_operations_errors_total[5m]))",
+          "legendFormat": "Errors/sec"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"value": 0, "color": "green"},
+              {"value": 0.1, "color": "yellow"},
+              {"value": 1, "color": "red"}
+            ]
+          }
+        }
+      }
+    },
+    {
+      "title": "Volume Operations Rate",
+      "type": "timeseries",
+      "gridPos": {"x": 0, "y": 4, "w": 12, "h": 8},
+      "targets": [
+        {
+          "expr": "sum(rate(evroc_csi_volume_operations_total[1m])) by (operation, status)",
+          "legendFormat": "{{operation}} ({{status}})"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops"
+        }
+      }
+    },
+    {
+      "title": "Volume Operation Latency (p95)",
+      "type": "timeseries",
+      "gridPos": {"x": 12, "y": 4, "w": 12, "h": 8},
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(evroc_csi_volume_operations_duration_seconds_bucket[5m])) by (operation, le))",
+          "legendFormat": "{{operation}} (p95)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        }
+      }
+    },
+    {
+      "title": "API Call Rate",
+      "type": "timeseries",
+      "gridPos": {"x": 0, "y": 12, "w": 12, "h": 8},
+      "targets": [
+        {
+          "expr": "sum(rate(evroc_csi_api_calls_total[1m])) by (method, status)",
+          "legendFormat": "{{method}} ({{status}})"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops"
+        }
+      }
+    },
+    {
+      "title": "API Call Latency (p95)",
+      "type": "timeseries",
+      "gridPos": {"x": 12, "y": 12, "w": 12, "h": 8},
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(evroc_csi_api_calls_duration_seconds_bucket[5m])) by (method, le))",
+          "legendFormat": "{{method}} (p95)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        }
+      }
+    },
+    {
+      "title": "Errors by Operation Type",
+      "type": "timeseries",
+      "gridPos": {"x": 0, "y": 20, "w": 24, "h": 8},
+      "targets": [
+        {
+          "expr": "sum(rate(evroc_csi_volume_operations_errors_total[1m])) by (operation, error_type)",
+          "legendFormat": "{{operation}} - {{error_type}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops"
+        }
+      }
+    }
+  ]
+}

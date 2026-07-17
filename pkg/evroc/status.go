@@ -4,16 +4,11 @@
 package evroc
 
 import (
-	"github.com/evroc-oss/evroc-csi-driver/pkg/evroc/types"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"github.com/evroc-oss/evroc-go-sdk/compute"
+	computetypes "github.com/evroc-oss/evroc-go-sdk/types/compute"
 )
 
 // IsAttachmentReady returns true if the attachment is fully reconciled and ready.
-func IsAttachmentReady(attachment *types.HotswapDiskAttachment) bool {
-	for _, cond := range attachment.Status.Conditions {
-		if cond.Type == "Ready" && cond.Status == metav1.ConditionTrue {
-			return true
-		}
-	}
-	return false
+func IsAttachmentReady(attachment *computetypes.HotswapDiskAttachment) bool {
+	return compute.IsAttachmentReady(attachment)
 }

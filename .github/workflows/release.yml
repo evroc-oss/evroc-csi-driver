@@ -17,15 +17,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - name: Set up Go
-        uses: actions/setup-go@3041bf56c941b39c61721a86cd11f3bb1338122a # v5.2.0
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version: '1.24'
 
       - name: Cache Go modules
-        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         with:
           path: |
             ~/.cache/go-build
@@ -43,7 +43,7 @@ jobs:
           make build
 
       - name: Upload binary artifact
-        uses: actions/upload-artifact@6f51ac03b9356f520e9adb1b1b7802705f340c2b # v4.5.0
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: evroc-csi-driver-binary
           path: bin/evroc-csi-driver
@@ -56,13 +56,13 @@ jobs:
     needs: build
     steps:
       - name: Checkout code
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@aa33708b10e362ff993539393ff100fa93ed6a27 # v3.7.1
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3.3.0
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -77,7 +77,7 @@ jobs:
 
       - name: Build and push Docker image
         id: build_push
-        uses: docker/build-push-action@4f58ea79222b3b9dc2c8bbdd6debcef730109a75 # v6.9.0
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
           push: true
@@ -92,7 +92,7 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Install Cosign
-        uses: sigstore/cosign-installer@dc72c7d5c4d10cd6bcb8cf6e3fd625a9e5e537da # v3.7.0
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
 
       - name: Sign Docker image with Cosign (keyless)
         env:
@@ -101,16 +101,14 @@ jobs:
           echo "Signing image with digest: ${DIGEST}"
           cosign sign --yes ghcr.io/${{ github.repository }}@${DIGEST}
 
-      # Manual installation: Syft CLI for generating Software Bill of Materials (SBOM)
-      # Replaced anchore/sbom-action to comply with org policy (only GitHub/Docker/Sigstore actions allowed)
-      - name: Install Syft
-        run: |
-          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
-
       - name: Generate SBOM
-        run: |
-          VERSION=${{ steps.get_version.outputs.VERSION }}
-          syft ghcr.io/${{ github.repository }}:${VERSION} -o spdx-json > sbom.spdx.json
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          image: ghcr.io/${{ github.repository }}:${{ steps.get_version.outputs.VERSION }}
+          format: spdx-json
+          output-file: sbom.spdx.json
+          upload-release-assets: false
+          upload-artifact: false
 
       - name: Attest SBOM
         env:
@@ -168,10 +166,10 @@ jobs:
     needs: [build, docker]
     steps:
       - name: Checkout code
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - name: Set up Helm
-        uses: azure/setup-helm@fe7b79cd5ee1e45176fcad797de68ecaf3ca4814 # v4.2.0
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
         with:
           version: '3.16.3'
 
@@ -195,7 +193,7 @@ jobs:
           cd ..
 
       - name: Install Cosign
-        uses: sigstore/cosign-installer@dc72c7d5c4d10cd6bcb8cf6e3fd625a9e5e537da # v3.7.0
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
 
       - name: Sign Helm chart package
         run: |
@@ -281,7 +279,7 @@ jobs:
             chart/evroc-csi-driver-*.tgz.pem
 
       - name: Log in to GitHub Container Registry for Helm
-        uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3.3.0
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}

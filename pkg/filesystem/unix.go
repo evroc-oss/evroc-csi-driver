@@ -32,14 +32,14 @@ func NewUnixOperations(logger *slog.Logger, deviceScanInterval time.Duration) *U
 
 // WaitForDevice waits for a block device to appear at the given path.
 func (u *UnixOperations) WaitForDevice(ctx context.Context, devicePath string, timeout time.Duration) error {
-	u.logger.Info("Waiting for device", "devicePath", devicePath, "timeout", timeout)
+	u.logger.Debug("Waiting for device", "devicePath", devicePath, "timeout", timeout)
 
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		// Check if device exists and is a block device
 		isBlock, err := u.IsBlockDevice(devicePath)
 		if err == nil && isBlock {
-			u.logger.Info("Device found", "devicePath", devicePath)
+			u.logger.Debug("Device found", "devicePath", devicePath)
 			return nil
 		}
 
@@ -82,7 +82,7 @@ func (u *UnixOperations) FormatDevice(ctx context.Context, devicePath, fsType st
 		return fmt.Errorf("unsupported filesystem type: %s (only ext4 is supported)", fsType)
 	}
 
-	u.logger.Info("Formatting device", "devicePath", devicePath, "fsType", "ext4")
+	u.logger.Debug("Formatting device", "devicePath", devicePath, "fsType", "ext4")
 	// -F: Force creation even if device appears to be in use
 	// -m0: Reserve 0% of blocks for root (maximize usable space for containers)
 	cmd := exec.CommandContext(ctx, "mkfs.ext4", "-F", "-m0", devicePath)
@@ -92,8 +92,60 @@ func (u *UnixOperations) FormatDevice(ctx context.Context, devicePath, fsType st
 		return fmt.Errorf("format failed: %w, output: %s", err, string(output))
 	}
 
-	u.logger.Info("Device formatted successfully", "devicePath", devicePath)
+	u.logger.Debug("Device formatted successfully", "devicePath", devicePath)
 	return nil
+}
+
+// RepairFilesystem attempts to repair a corrupted filesystem using fsck.
+// This is a safe operation that tries to recover data before reformatting.
+// Returns nil if repair succeeds or is not needed, error if repair fails.
+//
+// Prerequisite: fsck.ext4 must be available (provided by e2fsprogs package in Dockerfile)
+func (u *UnixOperations) RepairFilesystem(ctx context.Context, devicePath, fsType string) error {
+	if fsType != "ext4" && fsType != "" {
+		return fmt.Errorf("unsupported filesystem type: %s (only ext4 is supported)", fsType)
+	}
+
+	u.logger.Debug("Attempting filesystem repair", "devicePath", devicePath, "fsType", "ext4")
+
+	// fsck.ext4 flags:
+	// -p: Automatically repair (preen) without user intervention
+	// -f: Force checking even if filesystem appears clean
+	// This is safe - it only fixes obvious inconsistencies
+	cmd := exec.CommandContext(ctx, "fsck.ext4", "-p", "-f", devicePath)
+
+	output, err := cmd.CombinedOutput()
+	exitCode := 0
+	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			exitCode = exitErr.ExitCode()
+		} else {
+			// Error that's not an exit error (e.g., context cancelled, process couldn't start)
+			return fmt.Errorf("fsck command failed: %w", err)
+		}
+	}
+
+	// fsck exit codes:
+	// 0: No errors
+	// 1: Errors corrected
+	// 2: System should be rebooted (not applicable for volume)
+	// 4: Errors left uncorrected
+	// 8: Operational error
+	if exitCode == 0 || exitCode == 1 || exitCode == 2 {
+		u.logger.Debug("Filesystem repair completed successfully",
+			"devicePath", devicePath,
+			"exitCode", exitCode,
+			"output", string(output))
+		return nil
+	}
+
+	// Repair failed - filesystem is too corrupted to fix
+	u.logger.Warn("Filesystem repair failed",
+		"devicePath", devicePath,
+		"exitCode", exitCode,
+		"output", string(output))
+	return fmt.Errorf("fsck failed with exit code %d: %s", exitCode, string(output))
 }
 
 // IsBlockDevice checks if a path is a block device.
@@ -110,19 +162,19 @@ func (u *UnixOperations) IsBlockDevice(path string) (bool, error) {
 
 // Mount mounts a filesystem.
 func (u *UnixOperations) Mount(source, target, fsType string, flags uintptr, options string) error {
-	u.logger.Info("Mounting", "source", source, "target", target, "fsType", fsType, "flags", flags)
+	u.logger.Debug("Mounting", "source", source, "target", target, "fsType", fsType, "flags", flags)
 
 	if err := unix.Mount(source, target, fsType, flags, options); err != nil {
 		return fmt.Errorf("mount %s to %s: %w", source, target, err)
 	}
 
-	u.logger.Info("Mounted successfully", "source", source, "target", target)
+	u.logger.Debug("Mounted successfully", "source", source, "target", target)
 	return nil
 }
 
 // Unmount unmounts a filesystem.
 func (u *UnixOperations) Unmount(target string, flags int) error {
-	u.logger.Info("Unmounting", "target", target)
+	u.logger.Debug("Unmounting", "target", target)
 
 	if err := unix.Unmount(target, flags); err != nil {
 		// Check if already unmounted
@@ -133,7 +185,7 @@ func (u *UnixOperations) Unmount(target string, flags int) error {
 		return fmt.Errorf("unmount %s: %w", target, err)
 	}
 
-	u.logger.Info("Unmounted successfully", "target", target)
+	u.logger.Debug("Unmounted successfully", "target", target)
 	return nil
 }
 
@@ -216,4 +268,30 @@ func (u *UnixOperations) GetFilesystemStats(path string) (*FilesystemStats, erro
 		AvailableInodes: availableInodes,
 		UsedInodes:      usedInodes,
 	}, nil
+}
+
+// IsFilesystemCorruption returns true if the error indicates filesystem
+// corruption that can potentially be repaired with fsck.
+//
+// Only these specific errno values justify attempting repair/reformat:
+// - EINVAL: Invalid superblock, corrupted filesystem metadata
+// - EIO: I/O errors reading filesystem structures
+// - EUCLEAN: Filesystem marked as unclean (needs fsck)
+//
+// ALL other errors return false and should NOT trigger repair attempts.
+// This includes resource limits (EMFILE, ENOMEM), permissions (EACCES),
+// configuration (ENOENT), or any unknown errors.
+func IsFilesystemCorruption(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	var errno unix.Errno
+	if errors.As(err, &errno) {
+		switch errno {
+		case unix.EINVAL, unix.EIO, unix.EUCLEAN:
+			return true
+		}
+	}
+	return false
 }
