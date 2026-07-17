@@ -22,13 +22,11 @@ Follow https://docs.sigstore.dev/cosign/installation/ to download it.
 # Download chart and signature files
 VERSION=0.1.6
 wget https://github.com/evroc-oss/evroc-csi-driver/releases/download/v${VERSION}/evroc-csi-driver-${VERSION}.tgz
-wget https://github.com/evroc-oss/evroc-csi-driver/releases/download/v${VERSION}/evroc-csi-driver-${VERSION}.tgz.sig
-wget https://github.com/evroc-oss/evroc-csi-driver/releases/download/v${VERSION}/evroc-csi-driver-${VERSION}.tgz.pem
+wget https://github.com/evroc-oss/evroc-csi-driver/releases/download/v${VERSION}/evroc-csi-driver-${VERSION}.tgz.bundle
 
 # Verify the signature (keyless)
 cosign verify-blob evroc-csi-driver-${VERSION}.tgz \
-  --signature evroc-csi-driver-${VERSION}.tgz.sig \
-  --certificate evroc-csi-driver-${VERSION}.tgz.pem \
+  --bundle evroc-csi-driver-${VERSION}.tgz.bundle \
   --certificate-identity-regexp="^https://github.com/evroc-oss/evroc-csi-driver/" \
   --certificate-oidc-issuer="https://token.actions.githubusercontent.com"
 

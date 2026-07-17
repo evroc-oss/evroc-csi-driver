@@ -199,7 +199,7 @@ jobs:
         run: |
           VERSION=${{ steps.get_version.outputs.VERSION_NO_V }}
           cd chart
-          cosign sign-blob --yes evroc-csi-driver-${VERSION}.tgz --output-signature evroc-csi-driver-${VERSION}.tgz.sig --output-certificate evroc-csi-driver-${VERSION}.tgz.pem
+          cosign sign-blob --yes evroc-csi-driver-${VERSION}.tgz --bundle evroc-csi-driver-${VERSION}.tgz.bundle
           cd ..
 
       - name: Generate release notes
@@ -252,8 +252,7 @@ jobs:
 
           \`\`\`bash
           cosign verify-blob evroc-csi-driver-${VERSION#v}.tgz \\
-            --signature evroc-csi-driver-${VERSION#v}.tgz.sig \\
-            --certificate evroc-csi-driver-${VERSION#v}.tgz.pem \\
+            --bundle evroc-csi-driver-${VERSION#v}.tgz.bundle \\
             --certificate-identity=https://github.com/${REPO}/.github/workflows/release.yml@refs/tags/${VERSION} \\
             --certificate-oidc-issuer=https://token.actions.githubusercontent.com
           \`\`\`"
@@ -275,8 +274,7 @@ jobs:
             --title "$VERSION" \
             --notes-file release_notes.txt \
             chart/evroc-csi-driver-*.tgz \
-            chart/evroc-csi-driver-*.tgz.sig \
-            chart/evroc-csi-driver-*.tgz.pem
+            chart/evroc-csi-driver-*.tgz.bundle
 
       - name: Log in to GitHub Container Registry for Helm
         uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
