@@ -2,8 +2,8 @@ apiVersion: v2
 name: evroc-csi-driver
 description: A CSI driver for managing persistent block storage on evroc virtual machines
 type: application
-version: 0.2.1
-appVersion: "0.2.1"
+version: 0.2.2
+appVersion: "0.2.2"
 keywords:
   - storage
   - csi

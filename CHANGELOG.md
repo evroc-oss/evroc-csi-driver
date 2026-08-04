@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-08-04
+
+### Fixed
+- Corrected the Helm chart image digest, which pinned the v0.1.6 image while the tag read v0.2.1 — installs of chart 0.2.1 silently ran the v0.1.6 driver
+
 ## [0.2.1] - 2026-07-17
 
 
@@ -157,9 +162,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 [0.1.0]: https://github.com/evroc-oss/evroc-csi-driver/releases/tag/v0.1.0
 
-[Unreleased]: https://github.com/evroc-oss/evroc-csi-driver/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/evroc-oss/evroc-csi-driver/compare/v0.2.2...HEAD
 [0.1.4]: https://github.com/evroc-oss/evroc-csi-driver/releases/tag/v0.1.4
 [0.1.5]: https://github.com/evroc-oss/evroc-csi-driver/releases/tag/v0.1.5
 [0.1.6]: https://github.com/evroc-oss/evroc-csi-driver/releases/tag/v0.1.6
 [0.2.0]: https://github.com/evroc-oss/evroc-csi-driver/releases/tag/v0.2.0
 [0.2.1]: https://github.com/evroc-oss/evroc-csi-driver/releases/tag/v0.2.1
+[0.2.2]: https://github.com/evroc-oss/evroc-csi-driver/releases/tag/v0.2.2
