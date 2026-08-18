@@ -5,7 +5,7 @@
 # evroc CSI Driver
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-[![Go Report Card](https://goreportcard.com/badge/github.com/evroc-oss/evroc-csi-driver)](https://goreportcard.com/report/github.com/evroc-oss/evroc-csi-driver)
+[![golangci-lint](https://img.shields.io/github/actions/workflow/status/evroc-oss/evroc-csi-driver/ci.yml?branch=main&label=golangci-lint&logo=go)](https://github.com/evroc-oss/evroc-csi-driver/actions/workflows/ci.yml)
 
 A Container Storage Interface (CSI) driver for evroc, implementing the [CSI specification](https://github.com/container-storage-interface/spec/blob/master/spec.md) with full storage backend integration using the evroc REST API.
 

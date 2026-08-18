@@ -25,7 +25,8 @@ import (
 )
 
 const (
-	managedByLabel = "managed-by"
+	managedByLabel      = "managed-by"
+	attachmentDiskLabel = "compute.evroc.com/disk-attachment-disk"
 )
 
 var _ evrocpkg.StorageBackend = (*SDKStorageBackend)(nil)
@@ -84,6 +85,13 @@ func (s *SDKStorageBackend) managedByLabels() map[string]string {
 
 func (s *SDKStorageBackend) managedByFilter() labelFilter {
 	return labelFilter{labels: s.managedByLabels()}
+}
+
+func (s *SDKStorageBackend) diskAttachmentsFilter(diskName string) labelFilter {
+	return labelFilter{labels: map[string]string{
+		managedByLabel:      s.identifier,
+		attachmentDiskLabel: diskName,
+	}}
 }
 
 func (s *SDKStorageBackend) EnsureDiskCreated(ctx context.Context, name string, sizeMB int32, storageClass, zone string) (bool, error) {
@@ -271,6 +279,13 @@ func (s *SDKStorageBackend) EnsureAttachmentCreated(ctx context.Context, diskNam
 
 	s.logger.Info("Ensuring attachment exists", "diskName", diskName, "vmName", vmName, "attachmentName", attName)
 
+	// Kubernetes is authoritative for the requested node. Heal the rare case
+	// where a single stale attachment remains on the previous node by deleting
+	// it before creating the normally named attachment below.
+	if err := s.ensureNoOtherAttachmentsUseThisDisk(ctx, diskName, vmName, startTime); err != nil {
+		return err
+	}
+
 	diskRef := s.client.Compute().DiskRef(diskName)
 	vmRef := s.client.Compute().VMRef(vmName)
 
@@ -281,7 +296,18 @@ func (s *SDKStorageBackend) EnsureAttachmentCreated(ctx context.Context, diskNam
 	_, err := s.client.Compute().HotswapDiskAttachments().Create(ctx, attReq)
 	if err != nil {
 		if errors.Is(err, evroc.ErrConflict) {
-			s.logger.Info("Attachment already exists", "name", attName)
+			existing, getErr := s.client.Compute().HotswapDiskAttachments().Get(ctx, attName)
+			if getErr != nil {
+				return status.Errorf(codes.Aborted, "attachment %s conflicted but could not be verified: %v", attName, getErr)
+			}
+			if err := s.validateOwnership(sdkUserLabels(existing.Metadata.UserLabels), "attachment", attName, "get", "CreateAttachment", startTime); err != nil {
+				return err
+			}
+			if evrocpkg.ExtractResourceName(existing.Spec.DiskRef) != diskName ||
+				evrocpkg.ExtractResourceName(existing.Spec.VirtualMachineRef) != vmName {
+				return status.Errorf(codes.FailedPrecondition,
+					"attachment %s exists but does not target disk %s on VM %s", attName, diskName, vmName)
+			}
 			s.recordAPISuccess("CreateAttachment", startTime)
 			return nil
 		}
@@ -320,7 +346,7 @@ func (s *SDKStorageBackend) EnsureAttachmentDeleted(ctx context.Context, diskNam
 	s.logger.Info("Ensuring attachment is deleted", "diskName", diskName, "vmName", vmName, "attachmentName", attName)
 
 	existing, err := s.client.Compute().HotswapDiskAttachments().Get(ctx, attName)
-	if isNotFoundOrForbidden(err) {
+	if errors.Is(err, evroc.ErrNotFound) {
 		s.logger.Info("Attachment already deleted", "name", attName)
 		s.recordAPISuccess("DeleteAttachment", startTime)
 		return nil
@@ -335,17 +361,78 @@ func (s *SDKStorageBackend) EnsureAttachmentDeleted(ctx context.Context, diskNam
 	}
 
 	err = s.client.Compute().HotswapDiskAttachments().Delete(ctx, attName)
-	if err == nil || isNotFoundOrForbidden(err) {
+	if errors.Is(err, evroc.ErrNotFound) {
 		s.logger.Info("Attachment deleted successfully", "name", attName)
 		s.recordAPISuccess("DeleteAttachment", startTime)
 		return nil
 	}
+	if err != nil {
+		s.recordAPIError("DeleteAttachment", startTime, err)
+		return sdkErrorToGRPC(err)
+	}
+	if err := s.client.Compute().HotswapDiskAttachments().WaitForDeleted(ctx, attName, s.attachmentPollTimeout); err != nil {
+		s.recordAPIError("DeleteAttachment", startTime, err)
+		return status.Errorf(codes.Unavailable, "attachment %s was not deleted: %v", attName, err)
+	}
 
-	s.recordAPIError("DeleteAttachment", startTime, err)
-	return sdkErrorToGRPC(err)
+	s.logger.Info("Attachment deleted successfully", "name", attName)
+	s.recordAPISuccess("DeleteAttachment", startTime)
+	return nil
 }
 
 // --- Helpers ---
+
+// ensureNoOtherAttachmentsUseThisDisk removes a single stale attachment from
+// another VM. Multiple attachments are ambiguous and are left untouched.
+func (s *SDKStorageBackend) ensureNoOtherAttachmentsUseThisDisk(ctx context.Context, diskName, vmName string, startTime time.Time) error {
+	attachmentList, err := s.client.Compute().HotswapDiskAttachments().List(ctx, s.diskAttachmentsFilter(diskName))
+	if err != nil {
+		s.recordAPIError("ListAttachments", startTime, err)
+		return sdkErrorToGRPC(err)
+	}
+
+	var found []computetypes.HotswapDiskAttachment
+	for _, attachment := range attachmentList.Items {
+		if evrocpkg.ExtractResourceName(attachment.Spec.DiskRef) == diskName {
+			found = append(found, attachment)
+		}
+	}
+
+	if len(found) > 1 {
+		holders := make([]string, 0, len(found))
+		for _, attachment := range found {
+			holders = append(holders, evrocpkg.ExtractResourceName(attachment.Spec.VirtualMachineRef))
+		}
+		s.recordAPIErrorWithType("CreateAttachment", startTime, "failed_precondition")
+		return status.Errorf(codes.FailedPrecondition,
+			"disk %s has %d attachments (VMs %v); it must hold at most one before it can be attached to VM %s",
+			diskName, len(found), holders, vmName)
+	}
+
+	if len(found) == 0 {
+		return nil
+	}
+
+	attachment := found[0]
+	attachedVM := evrocpkg.ExtractResourceName(attachment.Spec.VirtualMachineRef)
+	if attachedVM == vmName {
+		return nil
+	}
+
+	name := attachment.Metadata.Id
+	s.logger.Warn("Removing stale disk attachment before reattaching",
+		"diskName", diskName, "fromVM", attachedVM, "toVM", vmName, "attachmentName", name)
+	if err := s.client.Compute().HotswapDiskAttachments().Delete(ctx, name); err != nil && !errors.Is(err, evroc.ErrNotFound) {
+		s.recordAPIError("DeleteAttachment", startTime, err)
+		return sdkErrorToGRPC(err)
+	}
+	if err := s.client.Compute().HotswapDiskAttachments().WaitForDeleted(ctx, name, s.attachmentPollTimeout); err != nil {
+		s.recordAPIError("DeleteAttachment", startTime, err)
+		return status.Errorf(codes.Unavailable, "stale attachment %s was not deleted: %v", name, err)
+	}
+
+	return nil
+}
 
 func attachmentName(diskName, vmName string) string {
 	fullName := fmt.Sprintf("%s-to-%s", diskName, vmName)

@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"sync"
 
+	evrocpkg "github.com/evroc-oss/evroc-csi-driver/pkg/evroc"
 	"github.com/evroc-oss/evroc-go-sdk/compute"
 	computetypes "github.com/evroc-oss/evroc-go-sdk/types/compute"
 	"google.golang.org/grpc/codes"
@@ -35,6 +36,13 @@ func NewMockStorageBackend(logger *slog.Logger, deviceMgr *MockDeviceManager) *M
 		attachments: make(map[string]*computetypes.HotswapDiskAttachment),
 		nodes:       nodes,
 	}
+}
+
+// AddNode registers a valid node for testing.
+func (m *MockStorageBackend) AddNode(vmName string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.nodes[vmName] = true
 }
 
 // EnsureDiskCreated creates or updates a disk in the mock storage
@@ -150,7 +158,7 @@ func (m *MockStorageBackend) CountNodeAttachments(ctx context.Context, vmName st
 
 	count := 0
 	for _, attachment := range m.attachments {
-		if attachment.Spec.VirtualMachineRef == vmName {
+		if evrocpkg.ExtractResourceName(attachment.Spec.VirtualMachineRef) == vmName {
 			count++
 		}
 	}
@@ -191,8 +199,8 @@ func (m *MockStorageBackend) EnsureAttachmentCreated(ctx context.Context, diskNa
 			Id: attachmentKey,
 		},
 		Spec: computetypes.HotswapDiskAttachmentSpec{
-			DiskRef:           diskName,
-			VirtualMachineRef: vmName,
+			DiskRef:           "/compute/projects/mock-project/regions/se-sto/disks/" + diskName,
+			VirtualMachineRef: "/compute/projects/mock-project/regions/se-sto/virtualMachines/" + vmName,
 		},
 		Status: computetypes.HotswapDiskAttachmentStatus{
 			Serial: &serial,

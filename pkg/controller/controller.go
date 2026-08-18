@@ -357,7 +357,7 @@ func (s *Service) DeleteVolume(ctx context.Context, req *csi.DeleteVolumeRequest
 
 	var attachedNodes []string
 	for _, attachment := range attachmentList.Items {
-		if attachment.Spec.DiskRef == req.GetVolumeId() {
+		if evroc.ExtractResourceName(attachment.Spec.DiskRef) == req.GetVolumeId() {
 			attachedNodes = append(attachedNodes, attachment.Spec.VirtualMachineRef)
 		}
 	}

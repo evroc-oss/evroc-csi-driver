@@ -154,36 +154,37 @@ The following table lists other configurable parameters of the evroc CSI driver 
 The CSI driver uses a `config.yaml` file with the following structure:
 
 ```yaml
-evroc:
-  restURL: "https://api.evroc.com"  # optional, this is the default
-  organization: "your-org-id"             # required
-  project: "your-project-id"              # required
+api:
+  base_url: "https://api.evroc.com"        # optional, this is the default
+
+context:
+  organization: "your-org-id"              # optional
+  project: "your-project-id"               # required
+  region: "se-sto"                         # required
 
 auth:
-  issuerURL: "https://authn.iam.evroc.com/realms/evroc-customer"  # optional, this is the default
-  clientID: "csi-driver"                  # optional, this is the default
+  token_url: "https://authn.iam.evroc.com/realms/evroc-customer/protocol/openid-connect/token"  # optional
+  client_id: "evroc-cli"                  # optional; default for username/password auth
   username: "service-account@evroc.com"  # required
   password: "your-password"               # required
-
-infrastructure:
-  region: "se-sto"                        # required for REST API
 
 csi:  # optional
   identifier: "my-cluster"                # optional, required only for multi-cluster setups
 ```
 
 **Required fields:**
-- `evroc.organization` - Your evroc organization ID
-- `evroc.project` - Your evroc project ID
+- `context.project` - Your evroc project ID
+- `context.region` - evroc region (e.g., `se-sto`)
 - `auth.username` - CSI driver service account username
 - `auth.password` - CSI driver service account password
-- `infrastructure.region` - evroc region (e.g., `se-sto`)
 
 **Optional fields with defaults:**
-- `evroc.restURL` - Defaults to `https://api.evroc.com`
-- `auth.issuerURL` - Defaults to `https://authn.iam.evroc.com/realms/evroc-customer`
-- `auth.clientID` - Defaults to `csi-driver`
+- `api.base_url` - Defaults to `https://api.evroc.com`
+- `auth.token_url` - Full OAuth2 token endpoint; defaults to the evroc production endpoint
+- `auth.client_id` - Defaults to `evroc-cli` for username/password authentication; for service-account authentication it is derived as `<service_account_id>_<project>`
 - `csi.identifier` - Only needed when running multiple clusters in the same project
+
+Use `api.base_url` and `auth.token_url` to target non-production or private endpoints. The deprecated `evroc.restURL` key remains supported as a fallback for `api.base_url`.
 
 This configuration is loaded from a Kubernetes secret and maps to the configuration structure defined in `pkg/config/config.go`.
 
