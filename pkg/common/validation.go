@@ -4,6 +4,9 @@
 package common
 
 import (
+	"errors"
+	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -28,6 +31,32 @@ func ValidateRequiredFields(fields map[string]string) error {
 		}
 	}
 	return nil
+}
+
+// KubeletRootDir is the directory kubelet creates CSI staging and target paths under.
+const KubeletRootDir = "/var/lib/kubelet"
+
+// RemoveWithinKubeletRoot removes a file or empty directory, resolved inside
+// KubeletRootDir so the removal cannot escape it.
+func RemoveWithinKubeletRoot(path string) error {
+	return removeWithinRoot(KubeletRootDir, path)
+}
+
+func removeWithinRoot(rootDir, path string) (err error) {
+	root, err := os.OpenRoot(rootDir)
+	if err != nil {
+		return fmt.Errorf("open root %s: %w", rootDir, err)
+	}
+	defer func() {
+		err = errors.Join(err, root.Close())
+	}()
+
+	rel, err := filepath.Rel(rootDir, filepath.Clean(path))
+	if err != nil {
+		return fmt.Errorf("resolve %s within %s: %w", path, rootDir, err)
+	}
+
+	return root.Remove(rel)
 }
 
 // ValidatePath validates that a path is safe from path traversal attacks.

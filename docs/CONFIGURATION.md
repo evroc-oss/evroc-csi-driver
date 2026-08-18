@@ -17,22 +17,22 @@ The evroc CSI driver is configured via a Kubernetes Secret containing a YAML con
 The configuration is provided as a YAML file with the following structure:
 
 ```yaml
-# evroc platform configuration
-evroc:
-  restURL: https://api.evroc.com                      # Optional
-  organization: <orgId>                                     # Required
-  project: <projectId>                                      # Required
+# API endpoint configuration
+api:
+  base_url: https://api.evroc.com                    # Optional
+
+# Project and region context
+context:
+  organization: <orgId>                              # Optional
+  project: <projectId>                               # Required
+  region: se-sto                                     # Required
 
 # Authentication configuration
 auth:
-  issuerURL: https://authn.iam.evroc.com/realms/evroc-customer  # Optional
-  clientID: csi-driver                              # Optional
-  username: service-account@evroc.com  # Required
-  password: my-password                             # Required
-
-# Infrastructure configuration
-infrastructure:
-  region: se-sto
+  token_url: https://authn.iam.evroc.com/realms/evroc-customer/protocol/openid-connect/token  # Optional
+  client_id: evroc-cli                               # Optional; default for username/password auth
+  username: service-account@evroc.com                # Required
+  password: my-password                              # Required
 
 # CSI driver configuration
 csi:
@@ -41,28 +41,30 @@ csi:
 
 ### Configuration Fields
 
-#### evroc Section (required)
+#### API Section (optional)
 
 | Field | Required | Default | Description |
 |-------|----------|---------|-------------|
-| `restURL` | No | `https://api.evroc.com` | evroc REST API server URL |
-| `organization` | Yes | - | Organization identifier in evroc |
-| `project` | Yes | - | Project identifier where VMs and disks are created |
+| `base_url` | No | `https://api.evroc.com` | Base URL for evroc APIs |
+
+#### Context Section (required)
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `project` | Yes | Project identifier where VMs and disks are created |
+| `region` | Yes | Cloud region, for example `se-sto` |
+| `organization` | No | Organization identifier, when required by the API |
 
 #### Auth Section (required)
 
 | Field | Required | Default | Description |
 |-------|----------|---------|-------------|
-| `issuerURL` | No | `https://authn.iam.evroc.com/realms/evroc-customer` | OIDC issuer URL for authentication |
-| `clientID` | No | `csi-driver` | OAuth2 client identifier |
+| `token_url` | No | evroc production token endpoint | Full OAuth2 token endpoint URL |
+| `client_id` | No | Authentication-dependent | Defaults to `evroc-cli` for username/password authentication; for service-account authentication it is derived as `<service_account_id>_<project>` |
 | `username` | Yes | - | Username for authentication (service account email) |
 | `password` | Yes | - | Password for authentication |
 
-#### Infrastructure Section (optional)
-
-| Field | Required | Default | Description |
-|-------|----------|---------|-------------|
-| `region` | Yes (for REST) | - | Cloud region (required for REST API, e.g., `se-sto` for Stockholm) |
+Both endpoints can be overridden for non-production or private deployments. `auth.token_url` must contain the complete token endpoint, including `/protocol/openid-connect/token`. The deprecated `evroc.restURL` key remains supported as a fallback for `api.base_url`.
 
 #### CSI Section (optional)
 
@@ -138,16 +140,13 @@ metadata:
 type: Opaque
 stringData:
   config.yaml: |
-    evroc:
-      organization: <orgId>
+    context:
       project: <projectId>
+      region: se-sto
 
     auth:
       username: service-account@evroc.com
       password: my-password
-
-    infrastructure:
-      region: se-sto
 ```
 
 Apply the Secret:

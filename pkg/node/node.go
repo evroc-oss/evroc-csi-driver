@@ -161,7 +161,7 @@ func (s *Service) NodeStageVolume(ctx context.Context, req *csi.NodeStageVolumeR
 				s.logger.Info("Removing existing directory at staging path for block volume",
 					"volumeID", volumeID,
 					"stagingPath", stagingPath)
-				if err := os.Remove(stagingPath); err != nil {
+				if err := common.RemoveWithinKubeletRoot(stagingPath); err != nil {
 					s.logger.Error("Failed to remove existing directory", "error", err)
 					return nil, status.Errorf(codes.Internal, "remove existing directory: %v", err)
 				}
