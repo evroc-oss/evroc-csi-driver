@@ -53,6 +53,14 @@ const (
 	// DefaultAttachmentPollTimeout is the default timeout for waiting for attachment serial population.
 	DefaultAttachmentPollTimeout = 2 * time.Minute
 
+	// DefaultDiskResizePollTimeout is the default timeout for waiting for a
+	// disk's status to reflect a new size after a resize (Patch) request.
+	DefaultDiskResizePollTimeout = 2 * time.Minute
+
+	// DefaultDiskResizePollInterval is the default polling interval for
+	// checking a disk's status size after a resize request.
+	DefaultDiskResizePollInterval = 5 * time.Second
+
 	// DefaultMetricsCollectionInterval is the default interval for collecting attachment state metrics.
 	DefaultMetricsCollectionInterval = 30 * time.Second
 
@@ -137,6 +145,16 @@ type CSIConfig struct {
 	// AttachmentPollTimeout is the timeout for waiting for attachment serial number population.
 	// Defaults to 2 minutes if not specified or 0.
 	AttachmentPollTimeout time.Duration `yaml:"attachmentPollTimeout,omitempty"`
+
+	// DiskResizePollTimeout is the timeout for waiting for a disk's status
+	// to reflect the new size after a resize request.
+	// Defaults to 2 minutes if not specified or 0.
+	DiskResizePollTimeout time.Duration `yaml:"diskResizePollTimeout,omitempty"`
+
+	// DiskResizePollInterval is the polling interval for checking a disk's
+	// status size after a resize request.
+	// Defaults to 5 seconds if not specified or 0.
+	DiskResizePollInterval time.Duration `yaml:"diskResizePollInterval,omitempty"`
 
 	// MetricsCollectionInterval is the interval for periodic collection of attachment state metrics.
 	// Defaults to 30 seconds if not specified or 0.
@@ -229,6 +247,12 @@ func (c *Config) applyDefaults() {
 	}
 	if c.CSI.AttachmentPollTimeout <= 0 {
 		c.CSI.AttachmentPollTimeout = DefaultAttachmentPollTimeout
+	}
+	if c.CSI.DiskResizePollTimeout <= 0 {
+		c.CSI.DiskResizePollTimeout = DefaultDiskResizePollTimeout
+	}
+	if c.CSI.DiskResizePollInterval <= 0 {
+		c.CSI.DiskResizePollInterval = DefaultDiskResizePollInterval
 	}
 	if c.CSI.MetricsCollectionInterval <= 0 {
 		c.CSI.MetricsCollectionInterval = DefaultMetricsCollectionInterval

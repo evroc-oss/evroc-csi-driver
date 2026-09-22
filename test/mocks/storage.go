@@ -73,6 +73,12 @@ func (m *MockStorageBackend) EnsureDiskCreated(ctx context.Context, name string,
 				Unit:   computetypes.DiskSpecDiskSizeUnitMB,
 			},
 		},
+		Status: computetypes.DiskStatus{
+			DiskSize: &computetypes.DiskStatusDiskSize{
+				Amount: sizeMB,
+				Unit:   computetypes.DiskStatusDiskSizeUnitMB,
+			},
+		},
 	}
 
 	m.disks[name] = disk
@@ -268,4 +274,30 @@ func (m *MockStorageBackend) DiskExists(ctx context.Context, name string) bool {
 	defer m.mu.Unlock()
 	_, exists := m.disks[name]
 	return exists
+}
+
+// EnsureDiskResized resizes a disk in the mock storage, mirroring the new
+// size into both spec and status so that status-based resize polling sees
+// the updated size immediately.
+func (m *MockStorageBackend) EnsureDiskResized(ctx context.Context, name string, sizeMB int32) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	existing, exists := m.disks[name]
+
+	if exists {
+		if existing.Spec.DiskSize != nil {
+			existing.Spec.DiskSize.Amount = sizeMB
+		}
+		// Mirror the new size into status so that status-based resize polling
+		// sees the updated size immediately (the mock backend is synchronous).
+		existing.Status.DiskSize = &computetypes.DiskStatusDiskSize{
+			Amount: sizeMB,
+			Unit:   computetypes.DiskStatusDiskSizeUnitMB,
+		}
+		m.disks[name] = existing
+		m.logger.Info("Resized mock disk", "name", name, "sizeMB", sizeMB)
+		return nil
+	}
+	return fmt.Errorf("disk not found")
 }

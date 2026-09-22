@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
@@ -344,7 +345,6 @@ func (s *Service) NodeStageVolume(ctx context.Context, req *csi.NodeStageVolumeR
 				"devicePath", devicePath,
 				"stagingPath", stagingPath,
 				"fsType", fsType)
-
 		}
 	}
 
@@ -648,6 +648,13 @@ func (s *Service) NodeGetCapabilities(ctx context.Context, req *csi.NodeGetCapab
 					},
 				},
 			},
+			{
+				Type: &csi.NodeServiceCapability_Rpc{
+					Rpc: &csi.NodeServiceCapability_RPC{
+						Type: csi.NodeServiceCapability_RPC_EXPAND_VOLUME,
+					},
+				},
+			},
 		},
 	}, nil
 }
@@ -775,4 +782,216 @@ func (s *Service) NodeGetInfo(ctx context.Context, req *csi.NodeGetInfoRequest) 
 		MaxVolumesPerNode:  s.maxVolumesPerNode,
 		AccessibleTopology: topology,
 	}, nil
+}
+
+// NodeExpandVolume expands the filesystem on the node after the backing block
+// device has been grown by ControllerExpandVolume.
+//
+// The controller side only resizes the cloud disk; the filesystem on the node
+// is not automatically grown by the kernel, so it must be expanded here (e.g.
+// with resize2fs for ext4). Without this, df inside the pod keeps showing the
+// old size even though lsblk shows the larger device.
+//
+// For raw block volumes there is no filesystem to resize, so the request is a
+// no-op and the requested capacity is echoed back.
+func (s *Service) NodeExpandVolume(ctx context.Context, req *csi.NodeExpandVolumeRequest) (*csi.NodeExpandVolumeResponse, error) {
+	startTime := time.Now()
+	s.logger.Info("NodeExpandVolume called",
+		"volumeID", req.GetVolumeId(),
+		"volumePath", req.GetVolumePath(),
+		"stagingTargetPath", req.GetStagingTargetPath())
+
+	if err := common.ValidateRequiredField(req.GetVolumeId(), "volume ID"); err != nil {
+		return nil, err
+	}
+	if err := common.ValidateRequiredField(req.GetVolumePath(), "volume path"); err != nil {
+		return nil, err
+	}
+	// Validate staging path (optional) for path traversal attacks, matching
+	// the validation done in NodeStageVolume/NodePublishVolume.
+	if sp := req.GetStagingTargetPath(); sp != "" {
+		if err := common.ValidatePath(sp, "staging target path"); err != nil {
+			return nil, err
+		}
+	}
+
+	volumePath := req.GetVolumePath()
+
+	// The volume must be available (published/staged) on this node. A missing
+	// path indicates the volume is not known here.
+	exists, err := s.fs.PathExists(volumePath)
+	if err != nil {
+		s.metrics.RecordNodeOperationError("expand", time.Since(startTime).Seconds(), "path_check_failed")
+		return nil, status.Errorf(codes.Internal, "failed to check volume path %s: %v", volumePath, err)
+	}
+	if !exists {
+		s.metrics.RecordNodeOperationError("expand", time.Since(startTime).Seconds(), "volume_not_found")
+		return nil, status.Errorf(codes.NotFound, "volume path does not exist: %s", volumePath)
+	}
+
+	// Determine the requested capacity to echo back in the response.
+	var capacityBytes int64
+	if cr := req.GetCapacityRange(); cr != nil {
+		capacityBytes = cr.GetRequiredBytes()
+		if capacityBytes == 0 {
+			capacityBytes = cr.GetLimitBytes()
+		}
+	}
+
+	// Determine access type and filesystem type. The capability may be omitted
+	// (the CSI spec allows the SP to infer the access type from the path); in
+	// that case we default to a mounted filesystem volume, which is the only
+	// access type this driver provisions.
+	volumeCapability := req.GetVolumeCapability()
+	isBlock := volumeCapability != nil && volumeCapability.GetBlock() != nil
+
+	if isBlock {
+		// Raw block volumes expose the device directly to the pod; there is no
+		// filesystem to grow.
+		s.logger.Info("Skipping filesystem resize for raw block volume",
+			"volumeID", req.GetVolumeId(),
+			"volumePath", volumePath)
+		s.metrics.RecordNodeOperation("expand", time.Since(startTime).Seconds())
+		return &csi.NodeExpandVolumeResponse{CapacityBytes: capacityBytes}, nil
+	}
+
+	// Filesystem volume: grow the filesystem to fill the (already-resized) device.
+	fsType := DefaultFSType
+	if volumeCapability != nil {
+		if mount := volumeCapability.GetMount(); mount != nil && mount.GetFsType() != "" {
+			fsType = mount.GetFsType()
+		}
+	}
+
+	// Resolve the backing block device. Prefer the staging path (a direct
+	// mount of the device) when provided; otherwise resolve from the volume
+	// path by following the bind-mount chain.
+	lookupPath := volumePath
+	if sp := req.GetStagingTargetPath(); sp != "" {
+		lookupPath = sp
+	}
+
+	devicePath, err := s.fs.FindDeviceForPath(lookupPath)
+	if err != nil {
+		// The volume's staging/target mount may not be visible in this
+		// container's /proc/mounts. This happens when the volume was staged
+		// before this driver pod started (e.g. after a node-pod restart):
+		// the mount still exists on the host, so the kubelet does not
+		// re-stage, but a freshly created container mount namespace does not
+		// inherit pre-existing submounts of the bind-mounted kubelet dir.
+		//
+		// Fall back to resolving the backing device from the
+		// VolumeAttachment, whose status.publishContext["serial"] was set by
+		// ControllerPublishVolume. resize2fs operates on the block device
+		// directly, so it does not matter that the filesystem is mounted only
+		// on the host and not in this container's namespace.
+		s.logger.Info("Backing mount not visible in /proc/mounts; resolving device via VolumeAttachment",
+			"volumeID", req.GetVolumeId(),
+			"lookupPath", lookupPath,
+			"error", err)
+
+		devicePath, err = s.resolveDeviceFromVolumeAttachment(ctx, req.GetVolumeId())
+		if err != nil {
+			s.logger.Error("Failed to resolve backing device for volume",
+				"volumeID", req.GetVolumeId(),
+				"lookupPath", lookupPath,
+				"error", err)
+			s.metrics.RecordNodeOperationError("expand", time.Since(startTime).Seconds(), "device_resolve_failed")
+			return nil, status.Errorf(codes.FailedPrecondition,
+				"could not resolve backing device for volume %s at %s: %v", req.GetVolumeId(), lookupPath, err)
+		}
+	}
+
+	s.logger.Info("Resizing filesystem",
+		"volumeID", req.GetVolumeId(),
+		"devicePath", devicePath,
+		"volumePath", volumePath,
+		"fsType", fsType)
+
+	if err := s.fs.ResizeFilesystem(ctx, devicePath, lookupPath, fsType); err != nil {
+		s.logger.Error("Failed to resize filesystem",
+			"volumeID", req.GetVolumeId(),
+			"devicePath", devicePath,
+			"fsType", fsType,
+			"error", err)
+		s.metrics.RecordNodeOperationError("expand", time.Since(startTime).Seconds(), "resize_failed")
+		return nil, status.Errorf(codes.Internal, "resize filesystem on %s: %v", devicePath, err)
+	}
+
+	s.logger.Info("Filesystem resized successfully",
+		"volumeID", req.GetVolumeId(),
+		"devicePath", devicePath,
+		"fsType", fsType,
+		"capacityBytes", capacityBytes)
+
+	s.metrics.RecordNodeOperation("expand", time.Since(startTime).Seconds())
+
+	return &csi.NodeExpandVolumeResponse{CapacityBytes: capacityBytes}, nil
+}
+
+// resolveDeviceFromVolumeAttachment resolves the backing block device for a
+// volume by reading the disk serial from the volume's VolumeAttachment.
+//
+// This is used as a fallback for NodeExpandVolume when the volume's staging
+// mount is not visible in the driver container's /proc/mounts (which happens
+// for volumes staged before the current driver pod started). The
+// VolumeAttachment's status.attachmentMetadata["serial"] is populated by the
+// external-attacher from the PublishContext returned by
+// ControllerPublishVolume, and persists in the cluster, independent of any
+// container's mount namespace.
+//
+// The returned device path follows the same convention as NodeStageVolume:
+// /dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_<serial>.
+func (s *Service) resolveDeviceFromVolumeAttachment(ctx context.Context, volumeID string) (string, error) {
+	// CreateVolume sets the CSI volume ID to "csi-" + <PVC name>, and
+	// Kubernetes names a dynamically-provisioned PV after its PVC, so the PV
+	// name is the volume ID without the "csi-" prefix.
+	pvName := strings.TrimPrefix(volumeID, "csi-")
+	if pvName == volumeID || pvName == "" {
+		return "", fmt.Errorf("cannot derive PV name from volume ID %q (missing \"csi-\" prefix)", volumeID)
+	}
+
+	// Verify the PV's CSI volume handle matches, guarding against non-default
+	// PV naming or a stale/mismatched volume ID.
+	pv, err := s.kubeClient.CoreV1().PersistentVolumes().Get(ctx, pvName, metav1.GetOptions{})
+	if err != nil {
+		return "", fmt.Errorf("get persistent volume %s for volume %s: %w", pvName, volumeID, err)
+	}
+	if pv.Spec.CSI == nil || pv.Spec.CSI.VolumeHandle != volumeID {
+		pvHandle := ""
+		if pv.Spec.CSI != nil {
+			pvHandle = pv.Spec.CSI.VolumeHandle
+		}
+		return "", fmt.Errorf("persistent volume %s handle %q does not match volume %q", pvName, pvHandle, volumeID)
+	}
+
+	// Find the VolumeAttachment for this PV on this node and read the serial
+	// the controller recorded at publish time.
+	vaList, err := s.kubeClient.StorageV1().VolumeAttachments().List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return "", fmt.Errorf("list volume attachments: %w", err)
+	}
+
+	for _, va := range vaList.Items {
+		if va.Spec.NodeName != s.nodeID {
+			continue
+		}
+		if va.Spec.Source.PersistentVolumeName == nil || *va.Spec.Source.PersistentVolumeName != pvName {
+			continue
+		}
+		serial := va.Status.AttachmentMetadata["serial"]
+		if serial == "" {
+			continue
+		}
+
+		devicePath := filepath.Join(s.deviceByIDPath, fmt.Sprintf("%s%s", QEMUSCSIDiskPrefix, serial))
+		s.logger.Debug("Resolved device from VolumeAttachment",
+			"volumeID", volumeID,
+			"pvName", pvName,
+			"serial", serial,
+			"devicePath", devicePath)
+		return devicePath, nil
+	}
+
+	return "", fmt.Errorf("no volume attachment with a disk serial found for volume %s on node %s", volumeID, s.nodeID)
 }

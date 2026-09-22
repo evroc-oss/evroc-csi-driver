@@ -49,11 +49,13 @@ func (f labelFilter) Apply(v url.Values) {
 
 // SDKStorageBackend implements evroc.StorageBackend using the evroc-go-sdk.
 type SDKStorageBackend struct {
-	client                *evroc.Client
-	identifier            string
-	logger                *slog.Logger
-	metrics               *metrics.Manager
-	attachmentPollTimeout time.Duration
+	client                 *evroc.Client
+	identifier             string
+	logger                 *slog.Logger
+	metrics                *metrics.Manager
+	attachmentPollTimeout  time.Duration
+	diskResizePollTimeout  time.Duration
+	diskResizePollInterval time.Duration
 }
 
 // NewSDKStorageBackend creates a StorageBackend backed by the evroc-go-sdk.
@@ -71,11 +73,13 @@ func NewSDKStorageBackend(ctx context.Context, cfg *config.Config, logger *slog.
 	logger.Info("SDK storage backend initialized")
 
 	return &SDKStorageBackend{
-		client:                client,
-		identifier:            identifier,
-		logger:                logger,
-		metrics:               metricsManager,
-		attachmentPollTimeout: cfg.CSI.AttachmentPollTimeout,
+		client:                 client,
+		identifier:             identifier,
+		logger:                 logger,
+		metrics:                metricsManager,
+		attachmentPollTimeout:  cfg.CSI.AttachmentPollTimeout,
+		diskResizePollTimeout:  cfg.CSI.DiskResizePollTimeout,
+		diskResizePollInterval: cfg.CSI.DiskResizePollInterval,
 	}, nil
 }
 
@@ -380,6 +384,140 @@ func (s *SDKStorageBackend) EnsureAttachmentDeleted(ctx context.Context, diskNam
 	return nil
 }
 
+func (s *SDKStorageBackend) EnsureDiskResized(ctx context.Context, name string, sizeMB int32) error {
+	startTime := time.Now()
+
+	s.logger.Info("Ensuring disk is resized", "name", name, "sizeMB", sizeMB)
+
+	disk, err := s.GetDisk(ctx, name)
+	if err != nil {
+		s.logger.Info("Failed to get disk", "name", name)
+		return err
+	}
+
+	// If the disk status already reports the requested size, the resize has
+	// already been applied (e.g. a previous call succeeded but the response
+	// was lost). Skip the Patch and return early.
+	if diskStatusMatchesSize(disk, sizeMB) {
+		s.logger.Info("Disk already at requested size", "name", name, "sizeMB", sizeMB)
+		s.recordAPISuccess("ResizeDisk", startTime)
+		return nil
+	}
+
+	// Shrinking a disk is not supported. Reject the request with an
+	// explicit error rather than relying on the Patch request to fail,
+	// which would surface an opaque backend error to the caller.
+	if disk.Status.DiskSize != nil {
+		currentMB := diskSizeToMB(disk.Status.DiskSize.Amount, disk.Status.DiskSize.Unit)
+		if sizeMB < currentMB {
+			err := status.Errorf(codes.OutOfRange,
+				"disk %s cannot be shrunk from %dMB to %dMB: shrinking is not supported",
+				name, currentMB, sizeMB)
+			s.recordAPIErrorWithType("ResizeDisk", startTime, "out_of_range")
+			return err
+		}
+	}
+	if disk.Spec.DiskSize == nil {
+		disk.Spec.DiskSize = &computetypes.DiskSpecDiskSize{}
+	}
+
+	disk.Spec.DiskSize.Amount = sizeMB
+	disk.Spec.DiskSize.Unit = computetypes.DiskSpecDiskSizeUnitMB
+
+	_, err = s.client.Compute().Disks().Patch(ctx, name, disk)
+	if err != nil {
+		// Requeue on conflicts
+		if errors.Is(err, evroc.ErrConflict) {
+			s.logger.Info("Conflict on PATCH when resizing disk", "name", name)
+			s.recordAPIError("ResizeDisk", startTime, err)
+			return status.Errorf(codes.Aborted, "%v", err)
+		}
+		s.logger.Info("Unexpected error when resizing disk", "name", name)
+		s.recordAPIError("ResizeDisk", startTime, err)
+		return sdkErrorToGRPC(err)
+	}
+
+	// The Patch request updates the spec; the backend reconciles the disk
+	// and eventually reports the new size in status. Poll until the status
+	// reflects the requested size so that the subsequent NodeExpandVolume
+	// sees the enlarged block device.
+	if err := s.waitForDiskResize(ctx, name, sizeMB, startTime); err != nil {
+		return err
+	}
+
+	s.recordAPISuccess("ResizeDisk", startTime)
+	s.logger.Info("Disk resized successfully", "name", name, "sizeMB", sizeMB)
+	return nil
+}
+
+// waitForDiskResize polls the disk's status until the reported disk size
+// matches the requested size, or the resize poll timeout is reached.
+func (s *SDKStorageBackend) waitForDiskResize(ctx context.Context, name string, sizeMB int32, startTime time.Time) error {
+	deadline := time.Now().Add(s.diskResizePollTimeout)
+	ticker := time.NewTicker(s.diskResizePollInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return status.Errorf(codes.DeadlineExceeded,
+				"context cancelled while waiting for disk %s to resize to %dMB: %v",
+				name, sizeMB, ctx.Err())
+		case <-ticker.C:
+		}
+
+		if time.Now().After(deadline) {
+			s.recordAPIError("ResizeDisk", startTime, fmt.Errorf("timeout"))
+			return status.Errorf(codes.DeadlineExceeded,
+				"disk %s did not report size %dMB within %v",
+				name, sizeMB, s.diskResizePollTimeout)
+		}
+
+		disk, err := s.client.Compute().Disks().Get(ctx, name)
+		if err != nil {
+			s.logger.Debug("Error getting disk during resize poll; will retry",
+				"name", name, "error", err)
+			continue
+		}
+
+		if diskStatusMatchesSize(disk, sizeMB) {
+			s.logger.Info("Disk status reports requested size",
+				"name", name, "sizeMB", sizeMB)
+			return nil
+		}
+
+		s.logger.Debug("Disk status does not yet reflect requested size; will retry",
+			"name", name,
+			"requestedMB", sizeMB,
+			"pollInterval", s.diskResizePollInterval)
+	}
+}
+
+// diskStatusMatchesSize returns true if the disk's status.DiskSize (converted
+// to MiB) matches the requested size in MiB.
+func diskStatusMatchesSize(disk *computetypes.Disk, sizeMB int32) bool {
+	if disk == nil || disk.Status.DiskSize == nil {
+		return false
+	}
+	return diskSizeToMB(disk.Status.DiskSize.Amount, disk.Status.DiskSize.Unit) == sizeMB
+}
+
+// diskSizeToMB converts a disk size amount+unit to MiB.
+func diskSizeToMB(amount int32, unit computetypes.DiskStatusDiskSizeUnit) int32 {
+	switch unit {
+	case computetypes.DiskStatusDiskSizeUnitMB:
+		return amount
+	case computetypes.DiskStatusDiskSizeUnitGB:
+		return amount * 1024
+	case computetypes.DiskStatusDiskSizeUnitTB:
+		return amount * 1024 * 1024
+	case computetypes.DiskStatusDiskSizeUnitKB:
+		return amount / 1024
+	default:
+		return amount
+	}
+}
+
 // --- Helpers ---
 
 // ensureNoOtherAttachmentsUseThisDisk removes a single stale attachment from
@@ -524,7 +662,7 @@ func classifySDKError(err error) string {
 		return "not_found"
 	}
 	if errors.Is(err, evroc.ErrConflict) {
-		return "already_exists"
+		return "conflict"
 	}
 	if errors.Is(err, evroc.ErrBadRequest) {
 		return "bad_request"

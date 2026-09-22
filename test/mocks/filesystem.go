@@ -101,6 +101,21 @@ func (m *MockFilesystemOperations) RepairFilesystem(ctx context.Context, deviceP
 	return nil
 }
 
+// ResizeFilesystem resizes the filesystem on a device (mock records the
+// operation and always succeeds, as long as the device exists).
+func (m *MockFilesystemOperations) ResizeFilesystem(ctx context.Context, devicePath, mountPath, fsType string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// Verify device exists
+	if _, err := os.Stat(devicePath); err != nil {
+		return fmt.Errorf("device does not exist: %w", err)
+	}
+
+	m.logger.Info("Mock resized filesystem", "devicePath", devicePath, "mountPath", mountPath, "fsType", fsType)
+	return nil
+}
+
 // IsBlockDevice checks if a path is a block device (mock checks if it's in our device manager)
 func (m *MockFilesystemOperations) IsBlockDevice(path string) (bool, error) {
 	// In our mock, all files in the mock device directory are considered block devices
@@ -153,6 +168,37 @@ func (m *MockFilesystemOperations) IsMountPoint(path string) (bool, error) {
 	m.logger.Debug("Checking if path is mount point", "path", path, "isMounted", isMounted)
 	return isMounted, nil
 }
+
+// FindDeviceForPath resolves the block device backing a mount path by walking
+// the in-memory mount records (the mock analogue of /proc/mounts). It follows
+// bind-mount hops until it reaches a source that is not itself a mount target,
+// which it treats as the device.
+func (m *MockFilesystemOperations) FindDeviceForPath(path string) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	current := path
+	for i := 0; i < mockMaxBindMountHops; i++ {
+		source, ok := m.mountPoints[current]
+		if !ok {
+			return "", fmt.Errorf("mount point %s not found", path)
+		}
+
+		// If the source is itself a mount target it is a bind hop; otherwise
+		// it is the device.
+		if _, isMount := m.mountPoints[source]; !isMount {
+			m.logger.Info("Mock resolved device for path", "path", path, "device", source)
+			return source, nil
+		}
+		current = source
+	}
+
+	return "", fmt.Errorf("could not resolve device for path %s (bind-mount chain too deep)", path)
+}
+
+// mockMaxBindMountHops bounds the bind-mount chain walk in the mock, mirroring
+// maxBindMountHops in the real implementation.
+const mockMaxBindMountHops = 10
 
 // MkdirAll creates a directory and all parents
 func (m *MockFilesystemOperations) MkdirAll(path string, perm uint32) error {

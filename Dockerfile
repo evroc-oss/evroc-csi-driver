@@ -38,10 +38,15 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
 FROM alpine:3.23@sha256:fd791d74b68913cbb027c6546007b3f0d3bc45125f797758156952bc2d6daf40
 
 # Install runtime dependencies
+# Note: resize2fs is in e2fsprogs-extra and xfs_growfs is in xfsprogs-extra
+# (the base e2fsprogs/xfsprogs packages only provide mkfs/fsck, not the
+# resize tools needed by NodeExpandVolume).
 RUN apk add --no-cache \
     ca-certificates \
     e2fsprogs \
+    e2fsprogs-extra \
     xfsprogs \
+    xfsprogs-extra \
     blkid \
     util-linux
 

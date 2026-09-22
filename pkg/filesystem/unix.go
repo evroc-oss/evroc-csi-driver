@@ -148,6 +148,54 @@ func (u *UnixOperations) RepairFilesystem(ctx context.Context, devicePath, fsTyp
 	return fmt.Errorf("fsck failed with exit code %d: %s", exitCode, string(output))
 }
 
+// ResizeFilesystem grows the filesystem on the given device to use all of the
+// available space on the underlying block device.
+//
+// For ext4 it runs resize2fs against the device path; online resize of a
+// mounted ext4 filesystem is supported, so the device does not need to be
+// unmounted first.
+//
+// For xfs it runs xfs_growfs against the mount path, which MUST be mounted.
+//
+// Prerequisite: resize2fs (e2fsprogs) and xfs_growfs (xfsprogs) are installed
+// in the driver image.
+func (u *UnixOperations) ResizeFilesystem(ctx context.Context, devicePath, mountPath, fsType string) error {
+	if fsType == "" {
+		fsType = "ext4"
+	}
+
+	switch fsType {
+	case "ext4":
+		u.logger.Debug("Resizing ext4 filesystem", "devicePath", devicePath)
+		// resize2fs with no size argument grows the filesystem to fill the
+		// device. This is safe and idempotent: if the filesystem already uses
+		// the full device it is a no-op.
+		cmd := exec.CommandContext(ctx, "resize2fs", devicePath)
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("resize2fs %s failed: %w, output: %s", devicePath, err, string(output))
+		}
+		u.logger.Debug("ext4 filesystem resized successfully", "devicePath", devicePath)
+		return nil
+
+	case "xfs":
+		if mountPath == "" {
+			return fmt.Errorf("xfs resize requires a mounted path, got empty mountPath")
+		}
+		u.logger.Debug("Resizing xfs filesystem", "mountPath", mountPath)
+		cmd := exec.CommandContext(ctx, "xfs_growfs", mountPath)
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("xfs_growfs %s failed: %w, output: %s", mountPath, err, string(output))
+		}
+		u.logger.Debug("xfs filesystem resized successfully", "mountPath", mountPath)
+		return nil
+
+	default:
+		return fmt.Errorf("unsupported filesystem type for resize: %s (only ext4 and xfs are supported)", fsType)
+	}
+}
+
 // IsBlockDevice checks if a path is a block device.
 func (u *UnixOperations) IsBlockDevice(path string) (bool, error) {
 	var stat unix.Stat_t
@@ -203,6 +251,64 @@ func (u *UnixOperations) IsMountPoint(path string) (bool, error) {
 		}
 	}
 	return false, nil
+}
+
+// FindDeviceForPath resolves the block device that backs the given mount path
+// by walking the bind-mount chain recorded in /proc/mounts until it reaches a
+// source that is a block device.
+//
+// This is needed by NodeExpandVolume because the CSI NodeExpandVolumeRequest
+// does not carry PublishContext (and therefore no disk serial), so the device
+// must be discovered from the path the volume is mounted at. The volume may
+// be reached through one or more bind mounts (staging path -> target path),
+// hence the chain walk.
+func (u *UnixOperations) FindDeviceForPath(path string) (string, error) {
+	u.logger.Debug("Resolving device for path", "path", path)
+
+	current := path
+	for i := 0; i < maxBindMountHops; i++ {
+		source, err := u.mountSource(current)
+		if err != nil {
+			return "", fmt.Errorf("resolve device for path %s: %w", path, err)
+		}
+
+		isBlock, err := u.IsBlockDevice(source)
+		if err != nil {
+			return "", fmt.Errorf("check block device %s: %w", source, err)
+		}
+		if isBlock {
+			u.logger.Debug("Resolved device for path", "path", path, "device", source)
+			return source, nil
+		}
+
+		// The source is itself a mount point (a bind hop); follow it.
+		current = source
+	}
+
+	return "", fmt.Errorf("could not resolve block device for path %s (bind-mount chain too deep)", path)
+}
+
+// maxBindMountHops bounds the number of bind-mount hops FindDeviceForPath will
+// follow when resolving the backing device. Real CSI staging/publish layouts
+// only add a single hop, so this is a generous safety limit.
+const maxBindMountHops = 10
+
+// mountSource returns the source field from /proc/mounts for the entry whose
+// mount point matches the given target path.
+func (u *UnixOperations) mountSource(target string) (string, error) {
+	data, err := os.ReadFile("/proc/mounts")
+	if err != nil {
+		return "", fmt.Errorf("read /proc/mounts: %w", err)
+	}
+
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) >= 2 && fields[1] == target {
+			return fields[0], nil
+		}
+	}
+
+	return "", fmt.Errorf("mount point %s not found in /proc/mounts", target)
 }
 
 // MkdirAll creates a directory and all necessary parents.

@@ -133,6 +133,34 @@ spec:
             seccompProfile:
               type: RuntimeDefault
 
+        # CSI Resizer sidecar
+        - name: csi-resizer
+          image: "{{ .Values.sidecars.resizer.image.repository }}:{{ .Values.sidecars.resizer.image.tag }}"
+          imagePullPolicy: {{ .Values.sidecars.resizer.image.pullPolicy }}
+          args:
+            - --csi-address={{ include "evroc-csi-driver.controller.socketPath" . }}
+            - --v={{ if .Values.debug }}5{{ else }}2{{ end }}
+            - --leader-election
+            - --leader-election-namespace={{ .Release.Namespace }}
+            - --timeout=150s
+            {{- with .Values.sidecars.resizer.extraArgs }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          volumeMounts:
+            - name: socket-dir
+              mountPath: /var/lib/csi/sockets/pluginproxy
+          resources:
+            {{- toYaml .Values.sidecars.resizer.resources | nindent 12 }}
+          # Security context: Sidecar runs securely
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+            seccompProfile:
+              type: RuntimeDefault
+
       volumes:
         - name: socket-dir
           emptyDir: {}
