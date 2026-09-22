@@ -106,6 +106,24 @@ func (bt *BasicTest) CreatePod(podName, manifestPath string, extraVars map[strin
 	return nil
 }
 
+// UpdatePVC updates a PVC using manifest from testdata
+func (bt *BasicTest) UpdatePVC(pvcName, testDataDir string, extraVars map[string]string) error {
+	vars := map[string]string{
+		"PVC_NAME":  pvcName,
+		"NAMESPACE": "default",
+	}
+	for k, v := range extraVars {
+		vars[k] = v
+	}
+
+	bt.t.Log("Updating PVC...")
+	if err := bt.LoadAndApplyManifest(bt.ctx, fmt.Sprintf("testdata/%s/pvc.yaml", testDataDir), vars); err != nil {
+		return fmt.Errorf("failed to create PVC: %w", err)
+	}
+
+	return nil
+}
+
 // WriteFile writes data to a file in a pod
 func (bt *BasicTest) WriteFile(podName, path, data string) error {
 	_, err := bt.Exec(bt.ctx, "default", podName, "sh", "-c", fmt.Sprintf("echo '%s' > %s", data, path))

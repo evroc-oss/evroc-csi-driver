@@ -51,6 +51,12 @@ rules:
     resources: ["events"]
     verbs: ["create", "patch", "update"]
 
+  # Access to Pods - needed by CSI resizer sidecar
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+
+
   # Leader election resources
   - apiGroups: ["coordination.k8s.io"]
     resources: ["leases"]
@@ -95,6 +101,18 @@ rules:
   # Access to Pods (to get VM name from hostname)
   - apiGroups: [""]
     resources: ["pods"]
+    verbs: ["get", "list"]
+
+  # Read-only access to PersistentVolumes and VolumeAttachments, used by
+  # NodeExpandVolume to resolve the backing block device serial when the
+  # volume's staging mount is not visible in this container's /proc/mounts
+  # (e.g. volumes staged before the driver pod restarted).
+  - apiGroups: [""]
+    resources: ["persistentvolumes"]
+    verbs: ["get", "list"]
+
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["volumeattachments"]
     verbs: ["get", "list"]
 
 ---

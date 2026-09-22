@@ -47,6 +47,11 @@ type StorageBackend interface {
 
 	// EnsureAttachmentDeleted ensures a HotswapDiskAttachment is deleted.
 	EnsureAttachmentDeleted(ctx context.Context, diskName, vmName string) error
+
+	// EnsureDiskResized resizes a disk and polls its status until the backend
+	// reports the new size, ensuring the resize is fully reconciled before
+	// returning.
+	EnsureDiskResized(ctx context.Context, diskName string, newSizeMB int32) error
 }
 
 // ExtractResourceName extracts the resource name from a full resource reference path.

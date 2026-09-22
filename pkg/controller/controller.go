@@ -237,34 +237,15 @@ func (s *Service) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest
 
 	volumeID := "csi-" + req.GetName()
 
-	// Handle capacity calculation correctly
-	capacityRange := req.GetCapacityRange()
-	capacityBytes := int64(0)
-
-	if capacityRange != nil {
-		capacityBytes = capacityRange.GetRequiredBytes()
-
-		// If RequiredBytes is 0, use LimitBytes instead (CSI spec allows this)
-		if capacityBytes == 0 {
-			capacityBytes = capacityRange.GetLimitBytes()
-		}
+	capacityBytes, capacityMB, err := capacityFromRange(req.GetCapacityRange())
+	if err != nil {
+		return nil, err
 	}
-
-	// Validate we have a valid capacity
-	if capacityBytes == 0 {
-		return nil, status.Error(codes.InvalidArgument,
-			"capacity range must specify required_bytes or limit_bytes")
-	}
-
-	// Round UP to ensure disk is AT LEAST RequiredBytes
-	// Formula: (capacityBytes + 1024*1024 - 1) / (1024*1024)
-	// This ensures we never create a disk smaller than requested
-	capacityMB := int32((capacityBytes + 1024*1024 - 1) / (1024 * 1024))
 
 	s.logger.Debug("Calculated disk size",
 		"requestedBytes", capacityBytes,
 		"calculatedMB", capacityMB,
-		"actualBytes", int64(capacityMB)*1024*1024)
+		"actualBytes", capacityMBToBytes(capacityMB))
 
 	storageClass := req.GetParameters()["storageClass"]
 	if storageClass == "" {
@@ -284,7 +265,7 @@ func (s *Service) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest
 
 	// Create disk via storage backend
 	s.logger.Info("Creating disk", "volumeID", volumeID, "sizeMB", capacityMB, "storageClass", storageClass, "zone", zone)
-	err := s.retryOnTransient(ctx, "create disk", func() error {
+	err = s.retryOnTransient(ctx, "create disk", func() error {
 		created, err := s.storage.EnsureDiskCreated(ctx, volumeID, capacityMB, storageClass, zone)
 		if err != nil {
 			return err
@@ -744,6 +725,58 @@ func (s *Service) ControllerGetCapabilities(ctx context.Context, req *csi.Contro
 					},
 				},
 			},
+			{
+				Type: &csi.ControllerServiceCapability_Rpc{
+					Rpc: &csi.ControllerServiceCapability_RPC{
+						Type: csi.ControllerServiceCapability_RPC_EXPAND_VOLUME,
+					},
+				},
+			},
 		},
+	}, nil
+}
+
+func (s *Service) ControllerExpandVolume(ctx context.Context, req *csi.ControllerExpandVolumeRequest) (*csi.ControllerExpandVolumeResponse, error) {
+	startTime := time.Now()
+	s.logger.Debug("ControllerExpandVolume called",
+		"volumeID", req.GetVolumeId(),
+		"capacityRange", req.CapacityRange)
+
+	if err := common.ValidateRequiredField(req.GetVolumeId(), "volume ID"); err != nil {
+		return nil, err
+	}
+
+	// Volume capability is OPTIONAL for ControllerExpandVolume per the CSI
+	// spec, and this RPC does not depend on it (it only resizes the cloud
+	// disk), so a missing capability is accepted.
+
+	capacityBytes, capacityMB, err := capacityFromRange(req.GetCapacityRange())
+	if err != nil {
+		return nil, err
+	}
+
+	s.logger.Info("Resizing disk",
+		"volumeID", req.GetVolumeId())
+
+	err = s.retryOnTransient(ctx, "resize disk", func() error {
+		return s.storage.EnsureDiskResized(ctx, req.GetVolumeId(), capacityMB)
+	})
+	if err != nil {
+		s.logger.Error("Failed to resize disk", "error", err)
+		s.metrics.RecordVolumeOperationError("resize", time.Since(startTime).Seconds(), "internal")
+		// Check if the error is already a gRPC status error (e.g. NotFound)
+		if st, ok := status.FromError(err); ok {
+			return nil, st.Err()
+		}
+		return nil, status.Errorf(codes.Internal, "failed to resize disk: %v", err)
+	}
+
+	s.logger.Info("Disk successfully resized",
+		"volumeID", req.GetVolumeId())
+
+	return &csi.ControllerExpandVolumeResponse{
+		CapacityBytes: capacityBytes,
+		// We always call NodeExpandVolume
+		NodeExpansionRequired: true,
 	}, nil
 }

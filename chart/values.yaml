@@ -23,7 +23,7 @@ controller:
 
   image:
     repository: ghcr.io/evroc-oss/evroc-csi-driver
-    tag: v0.2.3
+    tag: v0.3.0
     pullPolicy: IfNotPresent
 
   # Resource limits and requests
@@ -58,7 +58,7 @@ controller:
 node:
   image:
     repository: ghcr.io/evroc-oss/evroc-csi-driver
-    tag: v0.2.3
+    tag: v0.3.0
     pullPolicy: IfNotPresent
 
   # Resource limits and requests for node daemonset
@@ -130,7 +130,7 @@ storageClass:
   volumeBindingMode: WaitForFirstConsumer
 
   # Allow volume expansion
-  allowVolumeExpansion: false
+  allowVolumeExpansion: true
 
   # Reclaim policy (Delete or Retain)
   reclaimPolicy: Delete
@@ -208,6 +208,21 @@ sidecars:
       requests:
         cpu: 10m
         memory: 16Mi
+
+  # Node driver resizer sidecar
+  resizer:
+    image:
+      repository: registry.k8s.io/sig-storage/csi-resizer
+      tag: v2.2.1@sha256:ea1d25e23479000c7e8eeb92d827df66258df4e482ca054c5e7ce3fc0f5c41a5
+      pullPolicy: IfNotPresent
+    resources:
+      limits:
+        cpu: 50m
+        memory: 64Mi
+      requests:
+        cpu: 10m
+        memory: 16Mi
+
 
 # Logging configuration
 logging:

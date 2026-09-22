@@ -16,12 +16,14 @@ type Operations interface {
 	IsDeviceFormatted(ctx context.Context, devicePath string) (bool, error)
 	FormatDevice(ctx context.Context, devicePath, fsType string) error
 	RepairFilesystem(ctx context.Context, devicePath, fsType string) error
+	ResizeFilesystem(ctx context.Context, devicePath, mountPath, fsType string) error
 	IsBlockDevice(path string) (bool, error)
 
 	// Mount operations
 	Mount(source, target, fsType string, flags uintptr, options string) error
 	Unmount(target string, flags int) error
 	IsMountPoint(path string) (bool, error)
+	FindDeviceForPath(path string) (string, error)
 
 	// File operations
 	MkdirAll(path string, perm uint32) error

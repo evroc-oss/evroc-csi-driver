@@ -59,6 +59,53 @@ deploy_csi_driver() {
     cd "${PROJECT_ROOT}"
 }
 
+# Verify CSI driver pods are not crashing before running tests
+check_pods_healthy() {
+    log_info "Checking CSI driver pods are healthy..."
+    export KUBECONFIG="${K3S_KUBECONFIG}"
+
+    local components=("controller" "node")
+    for component in "${components[@]}"; do
+        local pods
+        pods=$(kubectl get pods -n kube-system \
+            -l app.kubernetes.io/component="${component}" \
+            -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || true)
+
+        if [ -z "${pods// /}" ]; then
+            log_error "No ${component} pods found in kube-system"
+            return 1
+        fi
+
+        for pod in ${pods}; do
+            local phase
+            phase=$(kubectl get pod "${pod}" -n kube-system \
+                -o jsonpath='{.status.phase}' 2>/dev/null || true)
+
+            if [ "${phase}" != "Running" ]; then
+                log_error "${component} pod ${pod} is in phase '${phase}' (expected Running)"
+                return 1
+            fi
+
+            local reasons
+            reasons=$(kubectl get pod "${pod}" -n kube-system \
+                -o jsonpath='{.status.containerStatuses[*].state.waiting.reason}' 2>/dev/null || true)
+
+            for reason in ${reasons}; do
+                case "${reason}" in
+                    CrashLoopBackOff|Error|ErrImagePull|ImagePullBackOff|CreateContainerConfigError|CreateContainerError|RunContainerError)
+                        log_error "${component} pod ${pod} is crashing: ${reason}"
+                        kubectl logs "${pod}" -n kube-system --tail=30 >&2 || true
+                        return 1
+                        ;;
+                esac
+            done
+        done
+    done
+
+    log_success "CSI driver pods are healthy"
+    return 0
+}
+
 # Run e2e tests
 run_tests() {
     log_info "Running e2e tests..."
@@ -179,6 +226,10 @@ main() {
     fi
 
     if [ "$SETUP_ONLY" = false ]; then
+        if ! check_pods_healthy; then
+            log_error "CSI driver pods are not healthy. Aborting tests."
+            exit 1
+        fi
         run_tests "$TEST_NAME"
     else
         log_info "Setup complete. Kubeconfig: ${K3S_KUBECONFIG}"
