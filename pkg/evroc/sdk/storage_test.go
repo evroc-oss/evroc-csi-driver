@@ -50,11 +50,16 @@ type fakeAPI struct {
 	deletedID    string
 
 	// Disk fields.
-	disk            *fakeDisk
-	diskGetStatus   int // non-zero overrides the GET response status.
-	diskPatchStatus int // non-zero overrides the PATCH response status.
-	diskGetCalls    int
-	diskPatchCalls  int
+	disk                *fakeDisk
+	diskGetStatus       int // non-zero overrides the GET response status.
+	diskPatchStatus     int // non-zero overrides the PATCH response status.
+	diskDeleteStatus    int
+	diskDeleteCalls     int
+	diskDeleted         bool
+	diskDeletionPending bool
+	diskConfirmStatus   int
+	diskGetCalls        int
+	diskPatchCalls      int
 }
 
 // fakeDisk is a mutable representation of a Disk returned by the fake API.
@@ -184,13 +189,32 @@ func (f *fakeAPI) handleAttachment(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleDisk serves Disk GET and PATCH requests. A successful PATCH
+// handleDisk serves Disk GET, PATCH, and asynchronous DELETE requests. A successful PATCH
 // reconciles the fake disk: the spec and status are updated to the patched
 // size so that subsequent GETs report the new size, mirroring the backend.
 func (f *fakeAPI) handleDisk(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
+	case http.MethodDelete:
+		f.diskDeleteCalls++
+		if f.diskDeleteStatus != 0 {
+			w.WriteHeader(f.diskDeleteStatus)
+			return
+		}
+		f.diskDeleted = true
+		w.WriteHeader(http.StatusNoContent)
+
 	case http.MethodGet:
 		f.diskGetCalls++
+		if f.diskDeleted {
+			if f.diskConfirmStatus != 0 {
+				w.WriteHeader(f.diskConfirmStatus)
+				return
+			}
+			if !f.diskDeletionPending {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+		}
 		if f.diskGetStatus != 0 {
 			w.WriteHeader(f.diskGetStatus)
 			return
@@ -489,4 +513,44 @@ func TestEnsureDiskResized_PatchConflictReturnsAborted(t *testing.T) {
 	require.Equal(t, codes.Aborted, status.Code(err))
 	require.Equal(t, 1, api.diskPatchCalls, "must PATCH once (returns conflict)")
 	require.Equal(t, 1, api.diskGetCalls, "must GET once via GetDisk before PATCH")
+}
+
+func TestEnsureDiskDeleted(t *testing.T) {
+	for _, tc := range []struct {
+		name                                   string
+		getStatus, deleteStatus, confirmStatus int
+		owner                                  string
+		pending                                bool
+		wantCode                               codes.Code
+		wantDeletes, wantGets                  int
+	}{
+		{name: "already absent", getStatus: http.StatusNotFound, wantCode: codes.OK, wantGets: 1},
+		{name: "forbidden lookup", getStatus: http.StatusForbidden, wantCode: codes.PermissionDenied, wantGets: 1},
+		{name: "foreign disk", owner: "other-cluster", wantCode: codes.PermissionDenied, wantGets: 1},
+		{name: "unlabeled disk", wantCode: codes.PermissionDenied, wantGets: 1},
+		{name: "forbidden delete", owner: testProject, deleteStatus: http.StatusForbidden, wantCode: codes.PermissionDenied, wantDeletes: 1, wantGets: 1},
+		{name: "disappeared before delete", owner: testProject, deleteStatus: http.StatusNotFound, wantCode: codes.OK, wantDeletes: 1, wantGets: 1},
+		{name: "confirmed deletion", owner: testProject, wantCode: codes.OK, wantDeletes: 1, wantGets: 2},
+		{name: "accepted but still present", owner: testProject, pending: true, wantCode: codes.Unavailable, wantDeletes: 1, wantGets: 2},
+		{name: "forbidden confirmation", owner: testProject, confirmStatus: http.StatusForbidden, wantCode: codes.PermissionDenied, wantDeletes: 1, wantGets: 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			api := &fakeAPI{diskGetStatus: tc.getStatus, diskDeleteStatus: tc.deleteStatus, diskConfirmStatus: tc.confirmStatus, diskDeletionPending: tc.pending, disk: &fakeDisk{managedBy: tc.owner}}
+			backend := newTestBackend(t, api)
+			err := backend.EnsureDiskDeleted(context.Background(), testDisk)
+			require.Equal(t, tc.wantCode, status.Code(err), "%v", err)
+			require.Equal(t, tc.wantDeletes, api.diskDeleteCalls)
+			require.Equal(t, tc.wantGets, api.diskGetCalls)
+		})
+	}
+}
+
+func TestEnsureDiskDeletedRetriesPendingDeletion(t *testing.T) {
+	api := &fakeAPI{disk: &fakeDisk{managedBy: testProject}, diskDeletionPending: true}
+	backend := newTestBackend(t, api)
+	require.Equal(t, codes.Unavailable, status.Code(backend.EnsureDiskDeleted(context.Background(), testDisk)))
+	// Simulate cloud reconciliation completing between CSI retries.
+	api.diskDeletionPending = false
+	require.NoError(t, backend.EnsureDiskDeleted(context.Background(), testDisk))
+	require.Equal(t, 1, api.diskDeleteCalls, "retry should recognize the disk is gone")
 }

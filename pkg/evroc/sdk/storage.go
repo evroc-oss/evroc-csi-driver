@@ -149,12 +149,23 @@ func (s *SDKStorageBackend) EnsureDiskCreated(ctx context.Context, name string, 
 
 func (s *SDKStorageBackend) EnsureDiskDeleted(ctx context.Context, name string) error {
 	startTime := time.Now()
-
 	s.logger.Info("Ensuring disk is deleted", "name", name)
 
 	existing, err := s.client.Compute().Disks().Get(ctx, name)
-	if isNotFoundOrForbidden(err) {
-		s.logger.Info("Disk already deleted", "name", name)
+	if errors.Is(err, evroc.ErrNotFound) {
+		s.recordAPISuccess("DeleteDisk", startTime)
+		return nil
+	}
+	if err != nil {
+		s.recordAPIError("DeleteDisk", startTime, err)
+		return sdkErrorToGRPC(err)
+	}
+	if err := s.validateOwnership(sdkUserLabels(existing.Metadata.UserLabels), "disk", name, "delete", "DeleteDisk", startTime); err != nil {
+		return err
+	}
+
+	err = s.client.Compute().Disks().Delete(ctx, name)
+	if errors.Is(err, evroc.ErrNotFound) {
 		s.recordAPISuccess("DeleteDisk", startTime)
 		return nil
 	}
@@ -163,19 +174,21 @@ func (s *SDKStorageBackend) EnsureDiskDeleted(ctx context.Context, name string) 
 		return sdkErrorToGRPC(err)
 	}
 
-	if err := s.validateOwnership(sdkUserLabels(existing.Metadata.UserLabels), "disk", name, "delete", "DeleteDisk", startTime); err != nil {
-		return err
-	}
-
-	err = s.client.Compute().Disks().Delete(ctx, name)
-	if err == nil || isNotFoundOrForbidden(err) {
-		s.logger.Info("Disk deleted successfully", "name", name)
+	// DELETE is asynchronous. Returning success before the disk is absent lets
+	// the provisioner complete PV deletion before the disk is removed.
+	// Recheck once and let the controller/provisioner retry pending deletion.
+	_, err = s.client.Compute().Disks().Get(ctx, name)
+	if errors.Is(err, evroc.ErrNotFound) {
+		s.logger.Info("Disk deletion confirmed", "name", name)
 		s.recordAPISuccess("DeleteDisk", startTime)
 		return nil
 	}
-
-	s.recordAPIError("DeleteDisk", startTime, err)
-	return sdkErrorToGRPC(err)
+	if err != nil {
+		s.recordAPIError("DeleteDisk", startTime, err)
+		return sdkErrorToGRPC(err)
+	}
+	s.recordAPIErrorWithType("DeleteDisk", startTime, "unavailable")
+	return status.Errorf(codes.Unavailable, "disk %s is still deleting", name)
 }
 
 func (s *SDKStorageBackend) GetDisk(ctx context.Context, name string) (*computetypes.Disk, error) {
@@ -658,8 +671,11 @@ func classifySDKError(err error) string {
 	if err == nil {
 		return ""
 	}
-	if isNotFoundOrForbidden(err) {
+	if errors.Is(err, evroc.ErrNotFound) {
 		return "not_found"
+	}
+	if errors.Is(err, evroc.ErrForbidden) {
+		return "permission_denied"
 	}
 	if errors.Is(err, evroc.ErrConflict) {
 		return "conflict"
@@ -678,8 +694,11 @@ func sdkErrorToGRPC(err error) error {
 	if err == nil {
 		return nil
 	}
-	if errors.Is(err, evroc.ErrNotFound) || errors.Is(err, evroc.ErrForbidden) {
+	if errors.Is(err, evroc.ErrNotFound) {
 		return status.Errorf(codes.NotFound, "%v", err)
+	}
+	if errors.Is(err, evroc.ErrForbidden) {
+		return status.Errorf(codes.PermissionDenied, "%v", err)
 	}
 	if errors.Is(err, evroc.ErrConflict) {
 		return status.Errorf(codes.AlreadyExists, "%v", err)
