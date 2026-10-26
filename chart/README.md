@@ -61,9 +61,9 @@ rm config.yaml
 Install directly from a GitHub Release:
 
 ```bash
-# Replace v0.3.1 with the desired version
+# Replace v0.4.0 with the desired version
 helm install evroc-csi-driver \
-  https://github.com/evroc-oss/evroc-csi-driver/releases/download/v0.3.1/evroc-csi-driver-0.3.1.tgz \
+  https://github.com/evroc-oss/evroc-csi-driver/releases/download/v0.4.0/evroc-csi-driver-0.4.0.tgz \
   --namespace kube-system \
   --set evroc.existingConfigSecret="evroc-credentials"
 ```
@@ -74,7 +74,7 @@ All Helm charts are signed with Cosign for supply chain security. To verify:
 
 ```bash
 # Download chart and signature files
-VERSION=0.3.1
+VERSION=0.4.0
 wget https://github.com/evroc-oss/evroc-csi-driver/releases/download/v${VERSION}/evroc-csi-driver-${VERSION}.tgz
 wget https://github.com/evroc-oss/evroc-csi-driver/releases/download/v${VERSION}/evroc-csi-driver-${VERSION}.tgz.bundle
 
@@ -140,9 +140,9 @@ The following table lists other configurable parameters of the evroc CSI driver 
 |-----------|-------------|---------|
 | `controller.replicas` | Number of controller replicas | `1` |
 | `controller.image.repository` | Controller image repository | `ghcr.io/evroc-oss/evroc-csi-driver` |
-| `controller.image.tag` | Controller image tag | `v0.3.1` |
+| `controller.image.tag` | Controller image tag | `v0.4.0` |
 | `node.image.repository` | Node plugin image repository | `ghcr.io/evroc-oss/evroc-csi-driver` |
-| `node.image.tag` | Node plugin image tag | `v0.3.1` |
+| `node.image.tag` | Node plugin image tag | `v0.4.0` |
 | `storageClass.create` | Create default storage class | `true` |
 | `storageClass.name` | Storage class name | `evroc-standard` |
 | `storageClass.isDefault` | Set as default storage class | `false` |

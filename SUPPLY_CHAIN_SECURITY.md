@@ -20,7 +20,7 @@ Follow https://docs.sigstore.dev/cosign/installation/ to download it.
 
 ```bash
 # Download chart and signature files
-VERSION=0.3.1
+VERSION=0.4.0
 wget https://github.com/evroc-oss/evroc-csi-driver/releases/download/v${VERSION}/evroc-csi-driver-${VERSION}.tgz
 wget https://github.com/evroc-oss/evroc-csi-driver/releases/download/v${VERSION}/evroc-csi-driver-${VERSION}.tgz.bundle
 
