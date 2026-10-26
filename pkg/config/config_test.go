@@ -244,10 +244,12 @@ func TestValidate_EmptyIdentifierAllowed(t *testing.T) {
 func TestString_Redaction(t *testing.T) {
 	cfg := &Config{
 		Auth: sdkconfig.AuthConfig{
-			TokenURL:             "https://auth.example.com",
-			ClientID:             "client-id",
-			Username:             "user",
-			Password:             "secret-password",
+			TokenURL: "https://auth.example.com",
+			ClientID: "client-id",
+			// These fields are deprecated for ServiceAccountID and ServiceAccountSecret, so get
+			// flagged by lint.
+			Username:             "user",            //nolint:staticcheck
+			Password:             "secret-password", //nolint:staticcheck
 			Token:                "secret-token",
 			RefreshToken:         "secret-refresh",
 			Scopes:               []string{"openid"},

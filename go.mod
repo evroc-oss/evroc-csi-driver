@@ -5,13 +5,13 @@ go 1.24.0
 require (
 	github.com/container-storage-interface/spec v1.12.0
 	github.com/evroc-oss/evroc-go-sdk v0.7.1
-	github.com/go-logr/logr v1.4.3
+	github.com/go-logr/logr v1.4.4
 	github.com/kubernetes-csi/csi-test/v5 v5.4.0
 	github.com/prometheus/client_golang v1.23.2
 	github.com/stretchr/testify v1.11.1
 	golang.org/x/sys v0.39.0
 	google.golang.org/grpc v1.69.2
-	google.golang.org/protobuf v1.36.11
+	google.golang.org/protobuf v1.36.12
 	gopkg.in/yaml.v3 v3.0.1
 	k8s.io/api v0.29.0
 	k8s.io/apimachinery v0.29.0

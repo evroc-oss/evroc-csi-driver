@@ -1,7 +1,10 @@
 # Multi-stage build for minimal image size
 
 # Stage 1: Build the driver binary
-FROM golang:1.24-alpine@sha256:8bee1901f1e530bfb4a7850aa7a479d17ae3a18beb6e09064ed54cfd245b7191 AS builder
+# Go 1.27.3 fixes CVE-2026-111943 (crypto/x509 blocks the compromised eMudhra
+# intermediate CAs). The fix is compiled into the binary, so the toolchain
+# must be kept at a patched version (1.26.10+ / 1.27.3+).
+FROM golang:1.27.3-alpine@sha256:b8c9b82affbbb82a020bbcf998dad2ba9516944ac7e883524642a481a9505e9c AS builder
 
 # Build arguments for version information
 ARG VERSION=dev
@@ -35,7 +38,9 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
     ./cmd/evroc-csi-driver/main.go
 
 # Stage 2: Create minimal runtime image
-FROM alpine:3.23@sha256:fd791d74b68913cbb027c6546007b3f0d3bc45125f797758156952bc2d6daf40
+# Alpine 3.23.7+ ships ca-certificates 20261020-r0, which removes the
+# compromised eMudhra roots from the trust store.
+FROM alpine:3.23@sha256:ff7f0c727dd796aa36787bfcd9a64bf35a6ce72a73451b3359fde849b6703d63
 
 # Install runtime dependencies
 # Note: resize2fs is in e2fsprogs-extra and xfs_growfs is in xfsprogs-extra
