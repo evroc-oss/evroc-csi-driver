@@ -194,7 +194,7 @@ Install the CSI driver using Helm:
 
 ```bash
 helm install evroc-csi-driver \
-  https://github.com/evroc-oss/evroc-csi-driver/releases/download/v0.3.1/evroc-csi-driver-0.3.1.tgz \
+  https://github.com/evroc-oss/evroc-csi-driver/releases/download/v0.4.0/evroc-csi-driver-0.4.0.tgz \
   --namespace kube-system \
   --set evroc.existingConfigSecret=evroc-credentials
 ```
