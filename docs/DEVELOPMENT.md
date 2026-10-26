@@ -4,7 +4,7 @@ This guide explains how to develop and test the evroc CSI driver.
 
 ## Prerequisites
 
-- Go 1.24 or later
+- Go 1.27.3 or later (crypto/x509 CVE-2026-111943 fix; rebuild required)
 - Docker
 - Kubernetes cluster (production or k3s for local testing)
 - kubectl

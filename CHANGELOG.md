@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- Fix CVE-2026-111943: build with Go 1.27.3, whose `crypto/x509` rejects certificate chains through the compromised eMudhra intermediate CAs. The fix is compiled into the binary, so all published images must be rebuilt with this toolchain.
+- Refresh the pinned Alpine 3.23 runtime base (3.23.7) so the shipped CA trust store drops the compromised eMudhra roots (`ca-certificates` 20261020-r0).
+
+### Changed
+- **BREAKING**: The Helm chart now installs the `evroc-standard` storage class as the cluster default (`storageClass.isDefault` defaults to `true`). Existing clusters with another default storage class will have that default silently replaced on upgrade. Set `storageClass.isDefault=false` to preserve the previous behaviour.
+
 ## [0.3.1] - 2026-09-23
 
 ### Fixed

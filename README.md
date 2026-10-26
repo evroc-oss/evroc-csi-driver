@@ -49,6 +49,7 @@ The driver integrates with evroc's REST API to manage persistent storage volumes
 - ✅ Volume staging with ext4 filesystem formatting
 - ✅ Volume publishing to pods (mount and bind mount)
 - ✅ Volume statistics reporting
+- ✅ Volume expansion
 
 **Access Modes:**
 - ✅ ReadWriteOnce (RWO) - Single node read-write
@@ -67,7 +68,6 @@ The driver integrates with evroc's REST API to manage persistent storage volumes
 **Volume Features:**
 - ❌ Volume snapshots - Not implemented
 - ❌ Volume cloning - Not implemented
-- ❌ Volume expansion - Not implemented
 
 **Access Modes:**
 - ❌ ReadOnlyMany (ROX) is not supported for block volumes
@@ -79,7 +79,7 @@ The driver integrates with evroc's REST API to manage persistent storage volumes
 - Kubernetes 1.28.0+
 - Helm 3.0+ (for Helm installation)
 - Kubernetes nodes must be evroc VMs
-- You must know what zone (one of 'a', 'b', or 'c') your VMs are in. 
+- Each node must be labeled with its zone (one of 'a', 'b', or 'c') — see [Step 1](#step-1-label-your-nodes)
 
 #### Node Runtime Requirements
 
@@ -123,7 +123,11 @@ sudo apk add util-linux e2fsprogs
 
 #### Step 1: Label Your Nodes
 
-Each Kubernetes node must have a zone label. Set it to one of the valid zones:
+Each Kubernetes node must have a zone label.
+
+The recommended way to do this is to install the [evroc Cloud Controller Manager (CCM)](https://github.com/evroc-oss/evroc-ccm-driver), which automatically labels every node with its zone (as `topology.kubernetes.io/zone`), along with region and instance type. See the CCM [Quickstart](https://github.com/evroc-oss/evroc-ccm-driver#quickstart) for installation instructions.
+
+If you prefer not to install the CCM, you can apply the labels manually instead:
 
 ```bash
 kubectl label node <node-name> topology.kubernetes.io/zone=a
@@ -190,7 +194,7 @@ Install the CSI driver using Helm:
 
 ```bash
 helm install evroc-csi-driver \
-  https://github.com/evroc-oss/evroc-csi-driver/releases/download/v0.1.6/evroc-csi-driver-0.1.6.tgz \
+  https://github.com/evroc-oss/evroc-csi-driver/releases/download/v0.3.1/evroc-csi-driver-0.3.1.tgz \
   --namespace kube-system \
   --set evroc.existingConfigSecret=evroc-credentials
 ```
