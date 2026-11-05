@@ -60,6 +60,10 @@ type fakeAPI struct {
 	diskConfirmStatus   int
 	diskGetCalls        int
 	diskPatchCalls      int
+
+	// VM fields.
+	vmLabels   map[string]string
+	vmGetCalls int
 }
 
 // fakeDisk is a mutable representation of a Disk returned by the fake API.
@@ -128,6 +132,13 @@ func (f *fakeAPI) handler() http.Handler {
 			f.handleAttachment(w, r)
 		case strings.Contains(r.URL.Path, "/disks"):
 			f.handleDisk(w, r)
+		case strings.Contains(r.URL.Path, "/virtualMachines/") && r.Method == http.MethodGet:
+			f.vmGetCalls++
+			parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"metadata": map[string]any{"id": parts[len(parts)-1], "userLabels": f.vmLabels},
+			})
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
@@ -296,7 +307,7 @@ func newTestBackend(t *testing.T, api *fakeAPI) *SDKStorageBackend {
 // The reported production case: remove the single stale attachment, wait for
 // deletion, and recreate it for the VM requested by Kubernetes.
 func TestEnsureAttachmentCreated_RecreatesAttachmentFromOtherVM(t *testing.T) {
-	api := &fakeAPI{listItems: []map[string]any{attachmentJSON(testDisk, testWorker)}}
+	api := &fakeAPI{disk: &fakeDisk{managedBy: testProject}, listItems: []map[string]any{attachmentJSON(testDisk, testWorker)}}
 	backend := newTestBackend(t, api)
 
 	require.NoError(t, backend.EnsureAttachmentCreated(context.Background(), testDisk, testControl))
@@ -309,7 +320,7 @@ func TestEnsureAttachmentCreated_RecreatesAttachmentFromOtherVM(t *testing.T) {
 // A disk showing more than one attachment is already inconsistent. Moving one
 // would leave the disk reachable from two VMs, so the attach must fail instead.
 func TestEnsureAttachmentCreated_RefusesWhenDiskHasSeveralAttachments(t *testing.T) {
-	api := &fakeAPI{listItems: []map[string]any{
+	api := &fakeAPI{disk: &fakeDisk{managedBy: testProject}, listItems: []map[string]any{
 		attachmentJSON(testDisk, testWorker),
 		attachmentJSON(testDisk, "test-worker-2"),
 	}}
@@ -326,6 +337,7 @@ func TestEnsureAttachmentCreated_RefusesWhenDiskHasSeveralAttachments(t *testing
 // The requested VM already holds the disk: publication is idempotent.
 func TestEnsureAttachmentCreated_SameVMIsIdempotent(t *testing.T) {
 	api := &fakeAPI{
+		disk:         &fakeDisk{managedBy: testProject},
 		listItems:    []map[string]any{attachmentJSON(testDisk, testWorker)},
 		createStatus: http.StatusConflict,
 	}
@@ -333,6 +345,48 @@ func TestEnsureAttachmentCreated_SameVMIsIdempotent(t *testing.T) {
 
 	require.NoError(t, backend.EnsureAttachmentCreated(context.Background(), testDisk, testWorker))
 	require.Equal(t, 1, api.createCalls)
+}
+
+// Clusters sharing a project run driver instances with different
+// identifiers. One instance must not attach a disk created by another.
+func TestEnsureAttachmentCreated_RefusesDiskOfOtherInstance(t *testing.T) {
+	for _, owner := range []string{"other-cluster", ""} {
+		api := &fakeAPI{disk: &fakeDisk{managedBy: owner}}
+		backend := newTestBackend(t, api)
+
+		err := backend.EnsureAttachmentCreated(context.Background(), testDisk, testWorker)
+
+		require.Equal(t, codes.NotFound, status.Code(err), "owner %q: %v", owner, err)
+		require.Zero(t, api.listCalls, "owner %q: must not touch attachments", owner)
+		require.Zero(t, api.createCalls, "owner %q: must not attach", owner)
+	}
+}
+
+// With vmOwnerLabel set, a Node name pointing at another cluster's VM in
+// the same project must not receive the disk.
+func TestEnsureAttachmentCreated_VMOwnerLabel(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		vmLabels   map[string]string
+		wantCode   codes.Code
+		wantCreate int
+	}{
+		{name: "own VM", vmLabels: map[string]string{"capi_cluster-id": testProject}, wantCode: codes.OK, wantCreate: 1},
+		{name: "other cluster's VM", vmLabels: map[string]string{"capi_cluster-id": "other-cluster"}, wantCode: codes.NotFound},
+		{name: "unlabelled VM", wantCode: codes.NotFound},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			api := &fakeAPI{disk: &fakeDisk{managedBy: testProject}, vmLabels: tc.vmLabels}
+			backend := newTestBackend(t, api)
+			backend.vmOwnerLabel = "capi_cluster-id"
+
+			err := backend.EnsureAttachmentCreated(context.Background(), testDisk, testWorker)
+
+			require.Equal(t, tc.wantCode, status.Code(err), "%v", err)
+			require.Equal(t, 1, api.vmGetCalls)
+			require.Equal(t, tc.wantCreate, api.createCalls)
+		})
+	}
 }
 
 func TestEnsureAttachmentDeleted_ForbiddenIsNotSuccess(t *testing.T) {

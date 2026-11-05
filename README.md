@@ -194,7 +194,7 @@ Install the CSI driver using Helm:
 
 ```bash
 helm install evroc-csi-driver \
-  https://github.com/evroc-oss/evroc-csi-driver/releases/download/v0.4.0/evroc-csi-driver-0.4.0.tgz \
+  https://github.com/evroc-oss/evroc-csi-driver/releases/download/v0.5.0/evroc-csi-driver-0.5.0.tgz \
   --namespace kube-system \
   --set evroc.existingConfigSecret=evroc-credentials
 ```
@@ -217,6 +217,8 @@ kubectl get storageclass evroc-standard
 ```
 
 See the [Helm chart README](chart/README.md) for detailed configuration options and the [Configuration Guide](docs/CONFIGURATION.md) for advanced configuration.
+
+The controller and the node plugin can also be installed in separate clusters — see the [Helm chart deployment modes](chart/README.md#deployment-modes).
 
 ## Usage Example
 

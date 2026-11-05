@@ -51,6 +51,7 @@ func (f labelFilter) Apply(v url.Values) {
 type SDKStorageBackend struct {
 	client                 *evroc.Client
 	identifier             string
+	vmOwnerLabel           string
 	logger                 *slog.Logger
 	metrics                *metrics.Manager
 	attachmentPollTimeout  time.Duration
@@ -75,6 +76,7 @@ func NewSDKStorageBackend(ctx context.Context, cfg *config.Config, logger *slog.
 	return &SDKStorageBackend{
 		client:                 client,
 		identifier:             identifier,
+		vmOwnerLabel:           cfg.CSI.VMOwnerLabel,
 		logger:                 logger,
 		metrics:                metricsManager,
 		attachmentPollTimeout:  cfg.CSI.AttachmentPollTimeout,
@@ -191,7 +193,7 @@ func (s *SDKStorageBackend) EnsureDiskDeleted(ctx context.Context, name string) 
 	return status.Errorf(codes.Unavailable, "disk %s is still deleting", name)
 }
 
-func (s *SDKStorageBackend) GetDisk(ctx context.Context, name string) (*computetypes.Disk, error) {
+func (s *SDKStorageBackend) GetDiskAndValidateOwnership(ctx context.Context, name string) (*computetypes.Disk, error) {
 	startTime := time.Now()
 
 	s.logger.Info("Getting disk", "name", name)
@@ -295,6 +297,16 @@ func (s *SDKStorageBackend) EnsureAttachmentCreated(ctx context.Context, diskNam
 	attName := attachmentName(diskName, vmName)
 
 	s.logger.Info("Ensuring attachment exists", "diskName", diskName, "vmName", vmName, "attachmentName", attName)
+
+	// Several clusters can share a project. Attach only disks created by this
+	// driver instance, so a static or restored PersistentVolume cannot reach
+	// another cluster's disk.
+	if _, err := s.GetDiskAndValidateOwnership(ctx, diskName); err != nil {
+		return err
+	}
+	if err := s.validateVMOwnership(ctx, vmName, startTime); err != nil {
+		return err
+	}
 
 	// Kubernetes is authoritative for the requested node. Heal the rare case
 	// where a single stale attachment remains on the previous node by deleting
@@ -402,7 +414,7 @@ func (s *SDKStorageBackend) EnsureDiskResized(ctx context.Context, name string, 
 
 	s.logger.Info("Ensuring disk is resized", "name", name, "sizeMB", sizeMB)
 
-	disk, err := s.GetDisk(ctx, name)
+	disk, err := s.GetDiskAndValidateOwnership(ctx, name)
 	if err != nil {
 		s.logger.Info("Failed to get disk", "name", name)
 		return err
@@ -621,6 +633,28 @@ func (s *SDKStorageBackend) validateExistingDisk(disk *computetypes.Disk, name s
 		}
 	}
 
+	return nil
+}
+
+// validateVMOwnership refuses VMs of other clusters when vmOwnerLabel is set.
+// Node names come from the workload cluster, so they are not trusted as proof
+// that a VM belongs to it.
+func (s *SDKStorageBackend) validateVMOwnership(ctx context.Context, vmName string, startTime time.Time) error {
+	if s.vmOwnerLabel == "" {
+		return nil
+	}
+	vm, err := s.client.Compute().VirtualMachines().Get(ctx, vmName)
+	if err != nil {
+		s.recordAPIError("GetVirtualMachine", startTime, err)
+		return sdkErrorToGRPC(err)
+	}
+	if owner := sdkUserLabels(vm.Metadata.UserLabels)[s.vmOwnerLabel]; owner != s.identifier {
+		s.recordAPIErrorWithType("CreateAttachment", startTime, "forbidden")
+		s.logger.Warn("Refusing to attach to VM of another cluster",
+			"vmName", vmName, "label", s.vmOwnerLabel, "owner", owner, "ourIdentifier", s.identifier)
+		return status.Errorf(codes.NotFound, "VM %s does not belong to this cluster (%s=%q, want %q)",
+			vmName, s.vmOwnerLabel, owner, s.identifier)
+	}
 	return nil
 }
 

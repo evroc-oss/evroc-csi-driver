@@ -101,8 +101,8 @@ func (m *MockStorageBackend) EnsureDiskDeleted(ctx context.Context, name string)
 	return nil
 }
 
-// GetDisk retrieves a specific disk from the mock storage
-func (m *MockStorageBackend) GetDisk(ctx context.Context, name string) (*computetypes.Disk, error) {
+// GetDiskAndValidateOwnership retrieves a specific disk from the mock storage
+func (m *MockStorageBackend) GetDiskAndValidateOwnership(ctx context.Context, name string) (*computetypes.Disk, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 

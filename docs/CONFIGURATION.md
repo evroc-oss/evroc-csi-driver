@@ -71,6 +71,7 @@ Both endpoints can be overridden for non-production or private deployments. `aut
 | Field | Required | Default | Description |
 |-------|----------|---------|-------------|
 | `identifier` | No | - | Unique identifier for this CSI driver instance. **Required when running multiple clusters in the same project** |
+| `vmOwnerLabel` | No | - | VM label key whose value must equal `identifier` before a volume is attached to that VM, e.g. `capi_cluster-id` for clusters created by the evroc Cluster API provider. Requires `identifier` |
 
 ## Multi-Cluster Support
 
@@ -86,7 +87,8 @@ Multiple Kubernetes clusters can share the same project. Each cluster must have 
    - Critical for multi-cluster setups - prevents clusters from interfering with each other
    - Must be configured when running multiple clusters in the same project
    - Set as a label on Disk/HotswapDiskAttachment resources in evroc API: `managed-by: <csi-identifier>`
-   - Prevents one cluster from deleting another cluster's disks
+   - Prevents one cluster from attaching, resizing or deleting another cluster's disks
+   - With `vmOwnerLabel`, also prevents attaching disks to another cluster's VMs
 
 3. **Zone (Topology)**: Determines where disks are created
    - Zone information comes from Kubernetes node labels (`topology.kubernetes.io/zone`) on your cluster

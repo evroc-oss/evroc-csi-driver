@@ -1,4 +1,4 @@
-{{- if .Values.rbac.create -}}
+{{- if and .Values.rbac.create .Values.controller.enabled }}
 ---
 # Controller ClusterRole
 apiVersion: rbac.authorization.k8s.io/v1
@@ -79,6 +79,8 @@ subjects:
     name: {{ include "evroc-csi-driver.controller.serviceAccountName" . }}
     namespace: {{ .Release.Namespace }}
 
+{{- end }}
+{{- if .Values.rbac.create }}
 ---
 # Node ClusterRole
 apiVersion: rbac.authorization.k8s.io/v1

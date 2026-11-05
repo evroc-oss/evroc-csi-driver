@@ -7,10 +7,14 @@ evroc CSI Driver has been deployed!
 
 Installation Summary:
 
+{{- if .Values.controller.enabled }}
 Configuration Secret: {{ .Values.evroc.existingConfigSecret | default "NOT SET - SEE WARNING BELOW" }}
+{{- end }}
 
 Components Deployed:
+{{- if .Values.controller.enabled }}
   Controller: {{ .Values.controller.replicas }} replica(s)
+{{- end }}
   Node DaemonSet: Running on all nodes
   CSI Driver: {{ include "evroc-csi-driver.driverName" . }}
 {{- if .Values.storageClass.create }}
@@ -90,7 +94,7 @@ Documentation:
 Support:
   https://github.com/evroc/evroc-csi-driver/issues
 
-{{- if not .Values.evroc.existingConfigSecret }}
+{{- if and .Values.controller.enabled (not .Values.evroc.existingConfigSecret) }}
 
 WARNING: No configuration secret specified!
 

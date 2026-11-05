@@ -519,7 +519,7 @@ func (s *Service) ValidateVolumeCapabilities(ctx context.Context, req *csi.Valid
 	}
 
 	// Check if volume exists
-	_, err := s.storage.GetDisk(ctx, req.GetVolumeId())
+	_, err := s.storage.GetDiskAndValidateOwnership(ctx, req.GetVolumeId())
 	if err != nil {
 		s.logger.Error("Failed to get disk", "volumeID", req.GetVolumeId(), "error", err)
 		return nil, status.Errorf(codes.NotFound, "volume %s does not exist", req.GetVolumeId())
