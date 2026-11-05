@@ -80,9 +80,6 @@ spec:
               mountPropagation: Bidirectional
             - name: device-dir
               mountPath: /dev
-            - name: config
-              mountPath: /etc/evroc-csi
-              readOnly: true
           resources:
             {{- toYaml .Values.node.resources | nindent 12 }}
           # Security context: Node driver requires privileged access
@@ -145,9 +142,6 @@ spec:
           hostPath:
             path: /dev
             type: Directory
-        - name: config
-          secret:
-            secretName: {{ include "evroc-csi-driver.configSecretName" . }}
 
       {{- with .Values.node.nodeSelector }}
       nodeSelector:

@@ -13,6 +13,15 @@ This Helm chart deploys the evroc CSI driver for Kubernetes, enabling dynamic pr
 
 ## Installation
 
+The Helm chart installs the controller and node services together by default. To install only the node DaemonSet, for a cluster whose CSI controller is managed separately, disable the controller:
+
+```bash
+helm install evroc-csi-driver ./chart \
+  --namespace kube-system \
+  --set evroc.existingConfigSecret="evroc-credentials" \
+  --set controller.enabled=false
+```
+
 ### 1. Label Your Nodes
 
 **IMPORTANT:** Each Kubernetes node must have a zone label before installing the CSI driver:
@@ -61,9 +70,9 @@ rm config.yaml
 Install directly from a GitHub Release:
 
 ```bash
-# Replace v0.4.0 with the desired version
+# Replace v0.5.0 with the desired version
 helm install evroc-csi-driver \
-  https://github.com/evroc-oss/evroc-csi-driver/releases/download/v0.4.0/evroc-csi-driver-0.4.0.tgz \
+  https://github.com/evroc-oss/evroc-csi-driver/releases/download/v0.5.0/evroc-csi-driver-0.5.0.tgz \
   --namespace kube-system \
   --set evroc.existingConfigSecret="evroc-credentials"
 ```
@@ -74,7 +83,7 @@ All Helm charts are signed with Cosign for supply chain security. To verify:
 
 ```bash
 # Download chart and signature files
-VERSION=0.4.0
+VERSION=0.5.0
 wget https://github.com/evroc-oss/evroc-csi-driver/releases/download/v${VERSION}/evroc-csi-driver-${VERSION}.tgz
 wget https://github.com/evroc-oss/evroc-csi-driver/releases/download/v${VERSION}/evroc-csi-driver-${VERSION}.tgz.bundle
 
@@ -120,6 +129,20 @@ NAME             PROVISIONER             RECLAIMPOLICY   VOLUMEBINDINGMODE      
 evroc-standard   disk.csi.evroc.com      Delete          WaitForFirstConsumer   false                  1m
 ```
 
+## Deployment Modes
+
+### Standard (single cluster) — default
+
+The chart deploys everything into one cluster: the controller Deployment, the
+node DaemonSet, CSIDriver, StorageClass, RBAC, and service accounts. The
+installation steps above are all you need — `controller.enabled` defaults to
+`true`.
+
+The evroc credentials Secret is mounted only into the controller pod. The node
+plugin does not use credentials: it reads the node's
+`topology.kubernetes.io/zone` label via the Kubernetes API, and everything else
+it needs has a built-in default.
+
 ## Configuration
 
 ### Credentials Configuration
@@ -138,11 +161,12 @@ The following table lists other configurable parameters of the evroc CSI driver 
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
+| `controller.enabled` | Deploy the controller Deployment | `true` |
 | `controller.replicas` | Number of controller replicas | `1` |
 | `controller.image.repository` | Controller image repository | `ghcr.io/evroc-oss/evroc-csi-driver` |
-| `controller.image.tag` | Controller image tag | `v0.4.0` |
+| `controller.image.tag` | Controller image tag | `v0.5.0` |
 | `node.image.repository` | Node plugin image repository | `ghcr.io/evroc-oss/evroc-csi-driver` |
-| `node.image.tag` | Node plugin image tag | `v0.4.0` |
+| `node.image.tag` | Node plugin image tag | `v0.5.0` |
 | `storageClass.create` | Create default storage class | `true` |
 | `storageClass.name` | Storage class name | `evroc-standard` |
 | `storageClass.isDefault` | Set as default storage class | `false` |
@@ -182,7 +206,8 @@ csi:  # optional
 - `api.base_url` - Defaults to `https://api.evroc.com`
 - `auth.token_url` - Full OAuth2 token endpoint; defaults to the evroc production endpoint
 - `auth.client_id` - Defaults to `evroc-cli` for username/password authentication; for service-account authentication it is derived as `<service_account_id>_<project>`
-- `csi.identifier` - Only needed when running multiple clusters in the same project
+- `csi.identifier` - String identifying this CSI deployment; use a distinct value for each cluster sharing a project.
+- `csi.vmOwnerLabel` - Optional string naming the VM label key to check. The CSI driver attaches only to VMs whose value for this key equals `csi.identifier`. For clusters deployed by CAPE, we recommend `capi_cluster-id`. When unset, the driver does not validate VM labels before attaching.
 
 Use `api.base_url` and `auth.token_url` to target non-production or private endpoints. The deprecated `evroc.restURL` key remains supported as a fallback for `api.base_url`.
 

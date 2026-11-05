@@ -21,8 +21,8 @@ type StorageBackend interface {
 	// EnsureDiskDeleted ensures a disk is deleted.
 	EnsureDiskDeleted(ctx context.Context, name string) error
 
-	// GetDisk retrieves a disk by name. Only returns disks managed by this CSI driver.
-	GetDisk(ctx context.Context, name string) (*computetypes.Disk, error)
+	// GetDiskAndValidateOwnership retrieves a disk only if it is managed by this CSI driver.
+	GetDiskAndValidateOwnership(ctx context.Context, name string) (*computetypes.Disk, error)
 
 	// ListDisks lists all disks managed by this CSI driver.
 	ListDisks(ctx context.Context) (*compute.DiskList, error)

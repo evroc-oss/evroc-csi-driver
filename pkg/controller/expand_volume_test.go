@@ -67,7 +67,7 @@ func TestControllerExpandVolume_Success(t *testing.T) {
 	require.True(t, resp.NodeExpansionRequired)
 
 	// The mock should have recorded the rounded-up MB size.
-	disk, err := storage.GetDisk(context.Background(), volumeID)
+	disk, err := storage.GetDiskAndValidateOwnership(context.Background(), volumeID)
 	require.NoError(t, err)
 	require.Equal(t, int32(2048), disk.Spec.DiskSize.Amount)
 }
@@ -93,7 +93,7 @@ func TestControllerExpandVolume_CapacityRounding(t *testing.T) {
 	require.Equal(t, int64(reqBytes), resp.CapacityBytes)
 
 	// ceil(1 GiB + 1 byte / 1 MiB) = 1025 MiB
-	disk, err := storage.GetDisk(context.Background(), volumeID)
+	disk, err := storage.GetDiskAndValidateOwnership(context.Background(), volumeID)
 	require.NoError(t, err)
 	require.Equal(t, int32(1025), disk.Spec.DiskSize.Amount)
 }

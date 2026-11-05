@@ -124,6 +124,11 @@ type CSIConfig struct {
 	// Used to label Disk objects that belong to this driver.
 	Identifier string `yaml:"identifier,omitempty"`
 
+	// VMOwnerLabel, when set, restricts attachments to VMs whose label with
+	// this key equals Identifier, such as the capi_cluster-id label CAPE puts
+	// on cluster machines. Requires Identifier.
+	VMOwnerLabel string `yaml:"vmOwnerLabel,omitempty"`
+
 	// MaxVolumesPerNode is the maximum number of volumes that can be attached to a single node.
 	// Defaults to 128 if not specified.
 	// Any negative value disables limit checking (backend enforces limits if needed).
@@ -284,6 +289,9 @@ func (c *Config) Validate() error {
 	if c.CSI.Identifier != "" && !isValidIdentifier(c.CSI.Identifier) {
 		return fmt.Errorf("csi.identifier must contain only alphanumeric characters, hyphens, and underscores")
 	}
+	if c.CSI.VMOwnerLabel != "" && c.CSI.Identifier == "" {
+		return fmt.Errorf("csi.vmOwnerLabel requires csi.identifier")
+	}
 
 	return nil
 }
@@ -328,7 +336,8 @@ func (c *Config) String() string {
 		Region: %s,
 	},
 	CSI: {
-		Identifier: %s
+		Identifier: %s,
+		VMOwnerLabel: %s
 	}
 }`,
 		c.Auth.TokenURL,
@@ -349,6 +358,7 @@ func (c *Config) String() string {
 		c.Context.Project,
 		c.Context.Region,
 		c.CSI.Identifier,
+		c.CSI.VMOwnerLabel,
 	)
 }
 

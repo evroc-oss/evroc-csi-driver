@@ -5,7 +5,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -35,7 +34,7 @@ var (
 	logJSON  = flag.Bool("log-json", false, "Use JSON log format")
 	mode     = flag.String("mode", string(driver.AllMode),
 		"The operation mode of the CSI driver (controller, node, or all)")
-	configPath  = flag.String("config", "/etc/evroc-csi/config.yaml", "Path to configuration file")
+	configPath  = flag.String("config", "/etc/evroc-csi/config.yaml", "Path to configuration file (controller mode)")
 	metricsPort = flag.Int("metrics-port", 9090, "Port for Prometheus metrics endpoint")
 	showVersion = flag.Bool("version", false, "Show version information and exit")
 )
@@ -94,7 +93,7 @@ func main() {
 	}()
 
 	// Load configuration
-	// Required for controller mode, optional for node mode
+	// Required for controller mode; node mode always uses built-in defaults.
 	var evrocConfig *config.Config
 	switch *mode {
 	case "controller", "all":
@@ -108,22 +107,9 @@ func main() {
 		logger.Info("Configuration loaded",
 			"configuration", evrocConfig.String())
 	case "node":
-		// Config is optional for node mode - try to load it but don't fail if missing
-		var err error
-		evrocConfig, err = config.LoadFromPath(*configPath)
-		if err != nil {
-			// Only accept "file not found" errors - use defaults and continue
-			// Other errors (permissions, YAML parsing, validation) indicate real problems
-			if errors.Is(err, os.ErrNotExist) {
-				logger.Info("No configuration file found for node mode, using defaults", "path", *configPath)
-				evrocConfig = config.NewWithDefaults()
-			} else {
-				logger.Error("Failed to load configuration for node mode", "path", *configPath, "error", err)
-				os.Exit(1)
-			}
-		} else {
-			logger.Info("Configuration loaded for node mode")
-		}
+		// Node mode does not use evroc credentials or external configuration.
+		evrocConfig = config.NewWithDefaults()
+		logger.Info("Using built-in configuration defaults for node mode")
 	}
 
 	// Create driver configuration
