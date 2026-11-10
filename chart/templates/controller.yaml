@@ -70,6 +70,9 @@ spec:
             - name: config
               mountPath: /etc/evroc-csi
               readOnly: true
+            {{- with .Values.controller.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
           resources:
             {{- toYaml .Values.controller.resources | nindent 12 }}
           # Security context: Controller runs as non-root
@@ -168,6 +171,9 @@ spec:
         - name: config
           secret:
             secretName: {{ include "evroc-csi-driver.configSecretName" . }}
+        {{- with .Values.controller.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
 
       {{- with .Values.controller.nodeSelector }}
       nodeSelector:

@@ -27,7 +27,7 @@ controller:
 
   image:
     repository: ghcr.io/evroc-oss/evroc-csi-driver
-    tag: v0.5.0
+    tag: v0.5.1
     pullPolicy: IfNotPresent
 
   # Resource limits and requests
@@ -51,6 +51,12 @@ controller:
   # Additional environment variables
   extraEnv: []
 
+  # Additional pod volumes (for example, a ConfigMap or Secret containing a CA)
+  extraVolumes: []
+
+  # Additional mounts in the evroc-csi-driver container only
+  extraVolumeMounts: []
+
   # Enable leader election for high availability
   leaderElection:
     enabled: true
@@ -62,7 +68,7 @@ controller:
 node:
   image:
     repository: ghcr.io/evroc-oss/evroc-csi-driver
-    tag: v0.5.0
+    tag: v0.5.1
     pullPolicy: IfNotPresent
 
   # Resource limits and requests for node daemonset
