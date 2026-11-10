@@ -70,9 +70,9 @@ rm config.yaml
 Install directly from a GitHub Release:
 
 ```bash
-# Replace v0.5.0 with the desired version
+# Replace v0.5.1 with the desired version
 helm install evroc-csi-driver \
-  https://github.com/evroc-oss/evroc-csi-driver/releases/download/v0.5.0/evroc-csi-driver-0.5.0.tgz \
+  https://github.com/evroc-oss/evroc-csi-driver/releases/download/v0.5.1/evroc-csi-driver-0.5.1.tgz \
   --namespace kube-system \
   --set evroc.existingConfigSecret="evroc-credentials"
 ```
@@ -83,7 +83,7 @@ All Helm charts are signed with Cosign for supply chain security. To verify:
 
 ```bash
 # Download chart and signature files
-VERSION=0.5.0
+VERSION=0.5.1
 wget https://github.com/evroc-oss/evroc-csi-driver/releases/download/v${VERSION}/evroc-csi-driver-${VERSION}.tgz
 wget https://github.com/evroc-oss/evroc-csi-driver/releases/download/v${VERSION}/evroc-csi-driver-${VERSION}.tgz.bundle
 
@@ -155,6 +155,31 @@ Create a Kubernetes Secret containing your evroc credentials as shown in the ins
 --set evroc.existingConfigSecret="evroc-credentials"
 ```
 
+### Custom CA certificates for the evroc API
+
+To trust a private CA, create a ConfigMap containing a PEM CA bundle under the
+key `ca.crt` in the release namespace and supply these Helm values:
+
+```yaml
+controller:
+  extraVolumes:
+    - name: evroc-api-ca
+      configMap:
+        name: evroc-api-ca
+  extraVolumeMounts:
+    - name: evroc-api-ca
+      mountPath: /etc/ssl/certs/evroc-api-ca.crt
+      subPath: ca.crt
+      readOnly: true
+```
+
+For a Secret, replace `configMap: {name: evroc-api-ca}` with
+`secret: {secretName: evroc-api-ca}`. Mounts apply only to the driver container.
+Go reads `/etc/ssl/certs` by default, so no environment variable is needed.
+The single-file mount preserves the image's existing CA certificates. ConfigMap
+and Secret updates do not propagate to `subPath` mounts; recreate the pods after
+CA updates (for example, with `kubectl rollout restart deployment/<name>`).
+
 ### Other Parameters
 
 The following table lists other configurable parameters of the evroc CSI driver chart:
@@ -163,10 +188,12 @@ The following table lists other configurable parameters of the evroc CSI driver 
 |-----------|-------------|---------|
 | `controller.enabled` | Deploy the controller Deployment | `true` |
 | `controller.replicas` | Number of controller replicas | `1` |
+| `controller.extraVolumes` | Additional controller pod volumes | `[]` |
+| `controller.extraVolumeMounts` | Additional controller driver mounts | `[]` |
 | `controller.image.repository` | Controller image repository | `ghcr.io/evroc-oss/evroc-csi-driver` |
-| `controller.image.tag` | Controller image tag | `v0.5.0` |
+| `controller.image.tag` | Controller image tag | `v0.5.1` |
 | `node.image.repository` | Node plugin image repository | `ghcr.io/evroc-oss/evroc-csi-driver` |
-| `node.image.tag` | Node plugin image tag | `v0.5.0` |
+| `node.image.tag` | Node plugin image tag | `v0.5.1` |
 | `storageClass.create` | Create default storage class | `true` |
 | `storageClass.name` | Storage class name | `evroc-standard` |
 | `storageClass.isDefault` | Set as default storage class | `false` |
